@@ -31,7 +31,10 @@ jobs:
 
       - name: Assemble APK
         shell: bash
-        run: gradle --no-daemon assembleDebug 2>&1 | tee gradle.log
+        run: |
+          mkdir -p out
+          { gradle --no-daemon assembleDebug -Ptsdk=28 && cp app/build/outputs/apk/debug/app-debug.apk out/archbox-target28.apk \
+            && gradle --no-daemon assembleDebug -Ptsdk=34 && cp app/build/outputs/apk/debug/app-debug.apk out/archbox-target34.apk; } 2>&1 | tee gradle.log
 
       # (surface the error as an annotation so it is readable through the API too)
       - name: Report build errors
@@ -49,14 +52,14 @@ jobs:
       - name: List APK native libs
         if: always()
         run: |
-          APK=$(ls app/build/outputs/apk/debug/*.apk | head -1)
+          APK=$(ls out/*.apk | head -1)
           L=$(unzip -l "$APK" | grep -E "lib/|\.dex" | awk '{print $1, $4}' | tr '\n' ';')
           echo "::notice title=apk-contents::$L"
 
       - name: List APK contents
         if: always()
         run: |
-          APK=$(ls app/build/outputs/apk/debug/*.apk | head -1)
+          APK=$(ls out/*.apk | head -1)
           L=$(unzip -l "$APK" | grep -E "lib/|AndroidManifest" | awk '{printf "%s %s%%0A", $1, $4}')
           echo "::notice title=apk-contents::$L"
           unzip -p "$APK" lib/arm64-v8a/libarchbox.so | head -c 4 | od -c | head -1
@@ -64,4 +67,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: archbox-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: out/*.apk

@@ -8,7 +8,9 @@ android {
         minSdk = 26
         // targetSdk 28 on purpose: from 29 on, SELinux forbids executing files
         // from the app data dir, which is where the Arch rootfs lives.
-        targetSdk = 28
+        val tsdk = (findProperty("tsdk") as String?)?.toInt() ?: 28
+        targetSdk = tsdk
+        if (tsdk != 28) applicationIdSuffix = ".t$tsdk"
         versionCode = 1
         versionName = "0.1"
         ndk { abiFilters += "arm64-v8a" }
