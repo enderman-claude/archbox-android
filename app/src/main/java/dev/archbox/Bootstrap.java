@@ -60,17 +60,63 @@ final class Bootstrap {
 
     // ---- download -------------------------------------------------------
 
-    private String download(Out out) throws Exception {
-        Exception last = null;
+    private static final class Probe {
+        final String url; long ms = Long.MAX_VALUE; String err;
+        Probe(String url) { this.url = url; }
+        String host() { return url.split("/")[2]; }
+    }
+
+    /** Probe every mirror at once (HEAD of the tarball, includes TLS handshake); fastest working first. */
+    private List<String> rank(Out out) throws Exception {
+        out.print("Testing mirrors...\n");
+        java.util.concurrent.ExecutorService ex = java.util.concurrent.Executors.newFixedThreadPool(URLS.length);
+        List<Probe> probes = new ArrayList<>();
+        List<java.util.concurrent.Future<?>> fs = new ArrayList<>();
         for (String u : URLS) {
+            final Probe pr = new Probe(u);
+            probes.add(pr);
+            fs.add(ex.submit(() -> {
+                long t0 = System.nanoTime();
+                try {
+                    HttpURLConnection c = (HttpURLConnection) new URL(pr.url).openConnection();
+                    c.setRequestMethod("HEAD");
+                    c.setConnectTimeout(6000);
+                    c.setReadTimeout(6000);
+                    int code = c.getResponseCode();
+                    c.disconnect();
+                    if (code != 200) pr.err = "HTTP " + code;
+                    else pr.ms = (System.nanoTime() - t0) / 1000000;
+                } catch (Exception e) { pr.err = e.toString(); }
+            }));
+        }
+        for (java.util.concurrent.Future<?> f : fs) {
+            try { f.get(10, java.util.concurrent.TimeUnit.SECONDS); } catch (Exception e) { f.cancel(true); }
+        }
+        ex.shutdownNow();
+        List<Probe> ok = new ArrayList<>();
+        for (Probe pr : probes) {
+            if (pr.ms != Long.MAX_VALUE) { ok.add(pr); out.print("  " + pr.host() + "  " + pr.ms + " ms\n"); }
+            else out.print("  " + pr.host() + "  \u001b[33mfailed: " + (pr.err == null ? "timeout" : pr.err) + "\u001b[0m\n");
+        }
+        java.util.Collections.sort(ok, (x, y) -> Long.compare(x.ms, y.ms));
+        List<String> ranked = new ArrayList<>();
+        for (Probe pr : ok) ranked.add(pr.url);
+        return ranked;
+    }
+
+    private String download(Out out) throws Exception {
+        List<String> ranked = rank(out);
+        if (ranked.isEmpty()) throw new IOException("no mirror reachable (see list above)");
+        Exception last = null;
+        for (String u : ranked) {
             try {
-                out.print("Mirror: " + u.split("/")[2] + "\n");
+                out.print("Downloading from " + u.split("/")[2] + "\n");
                 String md5 = downloadFrom(u, out);
                 chosen = u;
                 return md5;
             } catch (Exception e) {
                 last = e;
-                out.print("\n\u001b[33mmirror failed: " + e + "\u001b[0m\n");
+                out.print("\n\u001b[33mdownload failed: " + e + "\u001b[0m\n");
             }
         }
         throw new IOException("all mirrors failed, last error: " + last);
