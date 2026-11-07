@@ -144,7 +144,6 @@ public class MainActivity extends Activity implements TerminalSessionClient, Ter
     @Override public void onBell(@NonNull TerminalSession s) { }
     @Override public void onColorsChanged(@NonNull TerminalSession s) { }
     @Override public void onTerminalCursorStateChange(boolean state) { }
-    @Override public void setTerminalShellPid(@NonNull TerminalSession s, int pid) { }
     @Override public Integer getTerminalCursorStyle() { return null; }
     @Override public void logError(String tag, String message) { android.util.Log.e(tag, message); }
     @Override public void logWarn(String tag, String message) { android.util.Log.w(tag, message); }
