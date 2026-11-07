@@ -30,7 +30,21 @@ jobs:
           gradle-version: "8.7"
 
       - name: Assemble APK
-        run: gradle --no-daemon assembleDebug
+        shell: bash
+        run: gradle --no-daemon assembleDebug 2>&1 | tee gradle.log
+
+      # (surface the error as an annotation so it is readable through the API too)
+      - name: Report build errors
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          import re
+          t = open("gradle.log", errors="replace").read()
+          lines = [l for l in t.splitlines() if re.search(r"error|FAILED|wrong|Could not|not found|Unresolved|cannot find|What went", l, re.I)]
+          msg = "\n".join(lines[:40]) or t[-3000:]
+          msg = msg.replace("%","%25").replace("\r","%0D").replace("\n","%0A")
+          print("::error title=gradle::" + msg[:3500])
+          PY
 
       - uses: actions/upload-artifact@v4
         with:
