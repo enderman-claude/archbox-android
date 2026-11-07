@@ -18,13 +18,31 @@ import java.util.zip.GZIPInputStream;
 final class Bootstrap {
     interface Out { void print(String s); }
 
-    // os.archlinuxarm.org has no valid TLS certificate for its own hostname, so use the
-    // HTTPS mirrors (tried in order). Never falls back to plain HTTP.
-    static final String[] URLS = {
-        "https://jp.mirror.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz",
-        "https://ca.us.mirror.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz",
-        "https://mirrors.dotsrc.org/archlinuxarm/os/ArchLinuxARM-aarch64-latest.tar.gz",
+    // os.archlinuxarm.org has no valid TLS certificate for its own hostname, so use HTTPS on the
+    // official mirrors (list from archlinuxarm/PKGBUILDs core/pacman-mirrorlist, 2025-10-26;
+    // jp.mirror and il.us.mirror were dropped from it). All are probed in parallel and the
+    // fastest working one wins. Never falls back to plain HTTP.
+    private static final String PATH = "/os/ArchLinuxARM-aarch64-latest.tar.gz";
+    static final String[] HOSTS = {
+        "mirror.archlinuxarm.org",        // GeoIP redirect to the closest mirror
+        "dk.mirror.archlinuxarm.org",
+        "de.mirror.archlinuxarm.org",
+        "de3.mirror.archlinuxarm.org",
+        "de4.mirror.archlinuxarm.org",
+        "eu.mirror.archlinuxarm.org",
+        "gr.mirror.archlinuxarm.org",
+        "hu.mirror.archlinuxarm.org",
+        "tw.mirror.archlinuxarm.org",
+        "tw2.mirror.archlinuxarm.org",
+        "ca.us.mirror.archlinuxarm.org",
+        "fl.us.mirror.archlinuxarm.org",
+        "nj.us.mirror.archlinuxarm.org",
+        "mirrors.dotsrc.org/archlinuxarm", // Denmark, same host as dk.mirror
     };
+    static final String[] URLS = new String[HOSTS.length];
+    static {
+        for (int i = 0; i < HOSTS.length; i++) URLS[i] = "https://" + HOSTS[i] + PATH;
+    }
     private String chosen = URLS[0];
 
     private final File root, tarball, marker;
