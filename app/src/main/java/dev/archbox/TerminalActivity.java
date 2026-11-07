@@ -47,7 +47,6 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
         Crumbs.add(this, "creating TerminalView");
         view = new TerminalView(this, null);
         view.setTerminalViewClient(this);
-        view.setTypeface(Typeface.MONOSPACE);
         view.setTextSize((int) (14 * getResources().getDisplayMetrics().scaledDensity));
         view.setKeepScreenOn(true);
         col.addView(view, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
