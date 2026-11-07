@@ -10,6 +10,7 @@ android {
         // from the app data dir, which is where the Arch rootfs lives.
         val tsdk = (findProperty("tsdk") as String?)?.toInt() ?: 28
         targetSdk = tsdk
+        resValue("string", "app_label", "Archbox SDK$tsdk")
         if (tsdk != 28) applicationIdSuffix = ".t$tsdk"
         versionCode = 1
         versionName = "0.1"

@@ -33,8 +33,10 @@ jobs:
         shell: bash
         run: |
           mkdir -p out
-          { gradle --no-daemon assembleDebug -Ptsdk=28 && cp app/build/outputs/apk/debug/app-debug.apk out/archbox-target28.apk \
-            && gradle --no-daemon assembleDebug -Ptsdk=34 && cp app/build/outputs/apk/debug/app-debug.apk out/archbox-target34.apk; } 2>&1 | tee gradle.log
+          pip install --quiet pillow
+          ICON=app/src/main/res/drawable-nodpi/ic_launcher.png
+          { python3 tools/gen_icon.py "$GITHUB_SHA" 28 $ICON && gradle --no-daemon assembleDebug -Ptsdk=28 && cp app/build/outputs/apk/debug/app-debug.apk out/archbox-target28.apk \
+            && python3 tools/gen_icon.py "$GITHUB_SHA" 34 $ICON && gradle --no-daemon assembleDebug -Ptsdk=34 && cp app/build/outputs/apk/debug/app-debug.apk out/archbox-target34.apk; } 2>&1 | tee gradle.log
 
       # (surface the error as an annotation so it is readable through the API too)
       - name: Report build errors

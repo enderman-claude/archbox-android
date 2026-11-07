@@ -3,7 +3,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <application
         android:name=".App"
-        android:label="Archbox"
+        android:label="@string/app_label"
+        android:icon="@drawable/ic_launcher"
         android:extractNativeLibs="true"
         android:allowBackup="false"
         android:theme="@style/AppTheme">
