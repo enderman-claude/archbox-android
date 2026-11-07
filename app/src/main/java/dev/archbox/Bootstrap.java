@@ -18,7 +18,14 @@ import java.util.zip.GZIPInputStream;
 final class Bootstrap {
     interface Out { void print(String s); }
 
-    static final String URL = "https://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz";
+    // os.archlinuxarm.org has no valid TLS certificate for its own hostname, so use the
+    // HTTPS mirrors (tried in order). Never falls back to plain HTTP.
+    static final String[] URLS = {
+        "https://jp.mirror.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz",
+        "https://ca.us.mirror.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz",
+        "https://mirrors.dotsrc.org/archlinuxarm/os/ArchLinuxARM-aarch64-latest.tar.gz",
+    };
+    private String chosen = URLS[0];
 
     private final File root, tarball, marker;
     private long lastTick;
@@ -54,9 +61,26 @@ final class Bootstrap {
     // ---- download -------------------------------------------------------
 
     private String download(Out out) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL(URL).openConnection();
+        Exception last = null;
+        for (String u : URLS) {
+            try {
+                out.print("Mirror: " + u.split("/")[2] + "\n");
+                String md5 = downloadFrom(u, out);
+                chosen = u;
+                return md5;
+            } catch (Exception e) {
+                last = e;
+                out.print("\n\u001b[33mmirror failed: " + e + "\u001b[0m\n");
+            }
+        }
+        throw new IOException("all mirrors failed, last error: " + last);
+    }
+
+    private String downloadFrom(String u, Out out) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new URL(u).openConnection();
         c.setConnectTimeout(20000);
         c.setReadTimeout(30000);
+        if (c.getResponseCode() != 200) throw new IOException("HTTP " + c.getResponseCode());
         long total = c.getContentLengthLong();
         MessageDigest md = MessageDigest.getInstance("MD5");
         long done = 0;
@@ -77,7 +101,7 @@ final class Bootstrap {
 
     private String fetchMd5() {
         try {
-            HttpURLConnection c = (HttpURLConnection) new URL(URL + ".md5").openConnection();
+            HttpURLConnection c = (HttpURLConnection) new URL(chosen + ".md5").openConnection();
             c.setConnectTimeout(10000);
             c.setReadTimeout(10000);
             try (BufferedReader r = new BufferedReader(new InputStreamReader(c.getInputStream()))) {
