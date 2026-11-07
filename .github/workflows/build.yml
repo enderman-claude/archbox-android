@@ -46,6 +46,13 @@ jobs:
           print("::error title=gradle::" + msg[:3500])
           PY
 
+      - name: List APK native libs
+        if: always()
+        run: |
+          APK=$(ls app/build/outputs/apk/debug/*.apk | head -1)
+          L=$(unzip -l "$APK" | grep -E "lib/|\.dex" | awk '{print $1, $4}' | tr '\n' ';')
+          echo "::notice title=apk-contents::$L"
+
       - uses: actions/upload-artifact@v4
         with:
           name: archbox-debug-apk
