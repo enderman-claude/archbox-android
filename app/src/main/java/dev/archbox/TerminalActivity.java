@@ -37,12 +37,14 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
+        Crumbs.add(this, "TerminalActivity.onCreate");
         bootstrap = new Bootstrap(getFilesDir());
 
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
         col.setBackgroundColor(Color.BLACK);
 
+        Crumbs.add(this, "creating TerminalView");
         view = new TerminalView(this, null);
         view.setTerminalViewClient(this);
         view.setTypeface(Typeface.MONOSPACE);
@@ -52,6 +54,7 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
         col.addView(extraKeys());
         setContentView(col);
 
+        Crumbs.add(this, "views ready, installed=" + bootstrap.installed());
         if (bootstrap.installed()) startContainer();
         else attach(new TerminalSession("/system/bin/sleep", getFilesDir().getPath(),
                 new String[]{"sleep", "2147483647"}, env(), 2000, this));
@@ -60,12 +63,15 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
     private String[] env() { return new String[]{"TERM=xterm-256color", "COLORTERM=truecolor"}; }
 
     private void attach(TerminalSession s) {
+        Crumbs.add(this, "attachSession");
         session = s;
         view.attachSession(s);
+        Crumbs.add(this, "attached");
         view.requestFocus();
     }
 
     private void startContainer() {
+        Crumbs.add(this, "startContainer");
         String launcher = getApplicationInfo().nativeLibraryDir + "/libarchbox.so";
         attach(new TerminalSession(launcher, getFilesDir().getPath(),
                 new String[]{"archbox", bootstrap.root().getPath()}, env(), 4000, this));
@@ -176,6 +182,7 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
     }
     @Override public void onEmulatorSet() {
         if (!bootstrap.installed() && !bootstrapStarted && session != null) {
+            Crumbs.add(this, "emulator ready, starting bootstrap");
             bootstrapStarted = true;
             runBootstrap(session);
         }

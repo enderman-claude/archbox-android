@@ -19,15 +19,19 @@ public class MainActivity extends Activity {
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
         File crash = new File(getFilesDir(), "crash.txt");
-        if (!crash.exists()) { go(); return; }
+        String exit = Crumbs.lastExit(this);
+        if (!crash.exists() && exit == null) { go(); return; }
 
-        String text;
-        try (FileInputStream in = new FileInputStream(crash)) {
-            ByteArrayOutputStream o = new ByteArrayOutputStream();
-            byte[] buf = new byte[4096]; int n;
-            while ((n = in.read(buf)) > 0) o.write(buf, 0, n);
-            text = o.toString("UTF-8");
-        } catch (Exception e) { text = String.valueOf(e); }
+        String text = Crumbs.device() + "\n" + (exit == null ? "" : exit + "\n");
+        if (crash.exists()) {
+            try (FileInputStream in = new FileInputStream(crash)) {
+                ByteArrayOutputStream o = new ByteArrayOutputStream();
+                byte[] buf = new byte[4096]; int n;
+                while ((n = in.read(buf)) > 0) o.write(buf, 0, n);
+                text += o.toString("UTF-8") + "\n";
+            } catch (Exception e) { text += e + "\n"; }
+        }
+        text += "\nBreadcrumbs (last run):\n" + Crumbs.read(this);
 
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
@@ -46,12 +50,14 @@ public class MainActivity extends Activity {
 
         Button retry = new Button(this);
         retry.setText("Clear and retry");
-        retry.setOnClickListener(v -> { crash.delete(); go(); });
+        retry.setOnClickListener(v -> { crash.delete(); Crumbs.ack(this); go(); });
         col.addView(retry);
         setContentView(col);
     }
 
     private void go() {
+        Crumbs.clear(this);
+        Crumbs.add(this, "MainActivity -> TerminalActivity");
         startActivity(new Intent(this, TerminalActivity.class));
         finish();
     }
