@@ -200,48 +200,90 @@ final class Bootstrap {
         return name;
     }
 
+    /** True if any existing parent of f is a symlink or resolves outside root (would write onto the host). */
+    private boolean escapesRoot(File f) {
+        try {
+            String rootCanon = root.getCanonicalPath();
+            String parentCanon = f.getParentFile().getCanonicalPath();
+            return !(parentCanon.equals(rootCanon) || parentCanon.startsWith(rootCanon + "/"));
+        } catch (IOException e) { return true; }
+    }
+
+    private static void copyFile(File from, File to) throws IOException {
+        try (InputStream i = new FileInputStream(from); OutputStream o = new FileOutputStream(to)) {
+            byte[] b = new byte[1 << 16]; int n;
+            while ((n = i.read(b)) > 0) o.write(b, 0, n);
+        }
+    }
+
     private void extract(Out out) throws Exception {
         long total = tarball.length();
         List<String[]> dirModes = new ArrayList<>();
         Counting cnt = new Counting(new BufferedInputStream(new FileInputStream(tarball), 1 << 16));
+        String current = "?";
         try (TarArchiveInputStream tin = new TarArchiveInputStream(new GZIPInputStream(cnt, 1 << 16))) {
             TarArchiveEntry e;
             byte[] buf = new byte[1 << 16];
             while ((e = tin.getNextTarEntry()) != null) {
                 String name = clean(e.getName());
-                if (name.isEmpty() || name.equals(".") || (".." + "/" + name + "/").contains("/../")) continue;
+                current = name;
+                if (name.isEmpty() || name.equals(".") || ("../" + name + "/").contains("/../")) continue;
                 File f = new File(root, name);
                 String path = f.getPath();
                 int mode = e.getMode() & 07777;
                 File parent = f.getParentFile();
                 if (parent != null && !parent.exists()) parent.mkdirs();
+                // An absolute symlink earlier in the archive must never redirect writes onto the host fs.
+                if (parent != null && escapesRoot(f)) {
+                    out.print("\n\u001b[33mskipping (path escapes rootfs): " + name + "\u001b[0m\n");
+                    continue;
+                }
 
-                if (e.isDirectory()) {
-                    f.mkdirs();
-                    Os.chmod(path, mode | 0700);
-                    dirModes.add(new String[]{path, Integer.toString(mode)});
-                } else if (e.isSymbolicLink()) {
-                    f.delete();
-                    Os.symlink(e.getLinkName(), path);
-                } else if (e.isLink()) {
-                    f.delete();
-                    Os.link(new File(root, clean(e.getLinkName())).getPath(), path);
-                } else if (e.isFile()) {
-                    f.delete();
-                    try (OutputStream o = new FileOutputStream(f)) {
-                        int n;
-                        while ((n = tin.read(buf)) > 0) o.write(buf, 0, n);
-                    }
-                    Os.chmod(path, mode);
-                } else if (e.isFIFO()) {
-                    f.delete();
-                    try { Os.mkfifo(path, mode); } catch (Exception ignored) { }
-                } // device nodes: skipped, the launcher mounts /dev itself
+                try {
+                    if (e.isDirectory()) {
+                        f.mkdirs();
+                        try { Os.chmod(path, mode | 0700); } catch (Exception ignored) { }
+                        dirModes.add(new String[]{path, Integer.toString(mode)});
+                    } else if (e.isSymbolicLink()) {
+                        deleteRecursive(f);
+                        Os.symlink(e.getLinkName(), path);
+                    } else if (e.isLink()) {
+                        deleteRecursive(f);
+                        File target = new File(root, clean(e.getLinkName()));
+                        try {
+                            Os.link(target.getPath(), path);
+                        } catch (Exception linkFail) {
+                            // Some Android/SELinux setups refuse link(2) in app data: copy instead.
+                            copyFile(target, f);
+                            try { Os.chmod(path, mode); } catch (Exception ignored) { }
+                        }
+                    } else if (e.isFile()) {
+                        deleteRecursive(f);
+                        try (OutputStream o = new FileOutputStream(f)) {
+                            int n;
+                            while ((n = tin.read(buf)) > 0) o.write(buf, 0, n);
+                        }
+                        // setuid/setgid bits are meaningless with a single mapped uid; keep rwx only if refused.
+                        try { Os.chmod(path, mode); } catch (Exception ex) { Os.chmod(path, mode & 0777); }
+                    } else if (e.isFIFO()) {
+                        deleteRecursive(f);
+                        try { Os.mkfifo(path, mode); } catch (Exception ignored) { }
+                    } // device nodes: skipped, the launcher mounts /dev itself
+                } catch (Exception ex) {
+                    throw new IOException("extracting '" + name + "' (mode " + Integer.toOctalString(mode)
+                            + ", type " + (char) e.getLinkFlag() + "): " + ex, ex);
+                }
                 progress(out, "extract", cnt.count, total);
             }
+        } catch (IOException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            throw new IOException("extracting '" + current + "': " + ex, ex);
         }
-        for (int i = dirModes.size() - 1; i >= 0; i--)
-            Os.chmod(dirModes.get(i)[0], Integer.parseInt(dirModes.get(i)[1]));
+        // Restore real directory modes, deepest first.
+        for (int i = dirModes.size() - 1; i >= 0; i--) {
+            try { Os.chmod(dirModes.get(i)[0], Integer.parseInt(dirModes.get(i)[1])); } catch (Exception ignored) { }
+        }
         progress(out, "extract", total, total);
     }
 
