@@ -21,6 +21,8 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
+#include <sys/prctl.h>
+#include <poll.h>
 #include <unistd.h>
 
 #ifndef CLONE_NEWCGROUP
@@ -332,13 +334,18 @@ static void ptrace_probe(void) {
 
 /* Fallback for kernels without user namespaces: PRoot (ptrace based) shipped as libproot*.so
    next to this binary. Never returns on success. */
-static int run_proot(const char *root, char **cmd, const char *tty) {
-    char dir[512];
-    ssize_t n = readlink("/proc/self/exe", dir, sizeof dir - 1);
+static void exe_dir(char *dir, size_t len) {
+    ssize_t n = readlink("/proc/self/exe", dir, len - 1);
     if (n <= 0) die("readlink /proc/self/exe");
     dir[n] = 0;
     char *slash = strrchr(dir, '/');
     if (slash) *slash = 0;
+}
+
+/* probe != 0: quiet health check, no ptrace self-test output (see proot_works) */
+static int run_proot(const char *root, char **cmd, const char *tty, int probe) {
+    char dir[512];
+    exe_dir(dir, sizeof dir);
 
     /* targetSdk >= 29 forbids execve() of files in app data: "userland" PRoot maps ELF files itself */
     const char *ul = getenv("ARCHBOX_USERLAND");
@@ -410,11 +417,166 @@ static int run_proot(const char *root, char **cmd, const char *tty) {
     int status = 0;
     while (waitpid(child_pid, &status, 0) < 0 && errno == EINTR) {}
     int code = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
-    if (code != 0 && time(NULL) - t0 < 8) {
+    if (!probe && code != 0 && time(NULL) - t0 < 8) {
         fprintf(stderr, "\narchbox: proot exited with %d right after start\n", code);
         ptrace_probe();
     }
     return code;
+}
+
+
+/* ---- tier 2 health check -------------------------------------------------------------------
+   PRoot "starting" proves nothing: on the broken kernels it starts fine and then every
+   translated syscall fails with ENOSYS. So run a real filesystem operation through it first. */
+static int proot_works(const char *root, const char *tty) {
+    static char *probe_cmd[] = {"/usr/bin/mkdir", "-p", "/tmp/.archbox-probe", NULL};
+    pid_t p = fork();
+    if (p < 0) return 0;
+    if (p == 0) {
+        setpgid(0, 0);
+        _exit(run_proot(root, probe_cmd, tty, 1));
+    }
+    int st = 0;
+    for (int i = 0; i < 100; i++) {                       /* 10 s */
+        pid_t w = waitpid(p, &st, WNOHANG);
+        if (w == p) return WIFEXITED(st) && WEXITSTATUS(st) == 0;
+        if (w < 0 && errno != EINTR) return 0;
+        usleep(100000);
+    }
+    kill(-p, SIGKILL);                                    /* hung: take proot and tracees down */
+    waitpid(p, &st, 0);
+    return 0;
+}
+
+/* ---- tier 3: fakechroot + fakeroot -----------------------------------------------------------
+   No namespaces, no ptrace: glibc's own dynamic loader runs the rootfs binaries with
+   libfakechroot.so (rewrites path arguments of libc calls to <root>/path) and libfakeroot.so
+   (fake uid 0 / chown via the `faked` daemon) preloaded. All three are glibc objects shipped as
+   lib*.so in nativeLibraryDir.
+   Deliberately NOT `fakechroot fakeroot chroot <root> /bin/bash`: the first two are shell
+   scripts, and a "#!/bin/sh" line cannot resolve on Android. Setting the environment those
+   scripts would set, and exec'ing the loader ourselves, is equivalent and needs no host shell.
+   Limits: static binaries and raw syscalls bypass the preload; needs exec from app data
+   (targetSdk 28 build only, same as non-userland proot). */
+static pid_t faked_pid;
+static void kill_faked(void) { if (faked_pid > 0) { kill(faked_pid, SIGKILL); faked_pid = 0; } }
+static void forward_fc(int sig) { (void)sig; if (child_pid > 0) kill(child_pid, SIGKILL); kill_faked(); }
+
+/* Start the bundled faked daemon (tcp flavour: SysV IPC is blocked on Android) through the
+   rootfs loader. It prints "<key>:<pid>"; the key goes into FAKEROOTKEY. Returns 0 on success. */
+static int start_faked(const char *dir, const char *root, const char *ld, const char *libpath, char *key, size_t keylen) {
+    char faked[640];
+    snprintf(faked, sizeof faked, "%s/libfaked.so", dir);
+    if (access(faked, R_OK) < 0) { warn(faked); return -1; }
+    int fds[2];
+    if (pipe(fds) < 0) return -1;
+    faked_pid = fork();
+    if (faked_pid < 0) return -1;
+    if (faked_pid == 0) {
+        prctl(PR_SET_PDEATHSIG, SIGKILL);                 /* never outlive the launcher */
+        dup2(fds[1], 1); close(fds[0]); close(fds[1]);
+        char *argv[] = {"ld-linux-aarch64.so.1", "--library-path", (char *)libpath, faked, "--foreground", NULL};
+        setenv("GLIBC_TUNABLES", "glibc.pthread.rseq=0", 1);
+        execv(ld, argv);
+        _exit(127);
+    }
+    close(fds[1]);
+    struct pollfd pf = {fds[0], POLLIN, 0};
+    char buf[64] = "";
+    if (poll(&pf, 1, 5000) > 0) { ssize_t n = read(fds[0], buf, sizeof buf - 1); if (n > 0) buf[n] = 0; }
+    close(fds[0]);
+    char *colon = strchr(buf, ':');
+    if (!colon) { kill_faked(); return -1; }
+    *colon = 0;
+    snprintf(key, keylen, "%s", buf);
+    (void)root;
+    return 0;
+}
+
+static int run_fakechroot(const char *root, char **cmd, const char *tty) {
+    (void)tty;                                            /* stdin/out/err already are the pty */
+    char dir[512], fc[640], fr[640], ld[640], rootlib[640], libpath[1300], preload[1300], excl[1400];
+    exe_dir(dir, sizeof dir);
+    snprintf(fc, sizeof fc, "%s/libfakechroot.so", dir);
+    snprintf(fr, sizeof fr, "%s/libfakeroot.so", dir);
+    snprintf(ld, sizeof ld, "%s" LD_SO, root);
+    snprintf(rootlib, sizeof rootlib, "%s/usr/lib", root);
+    if (access(fc, R_OK) < 0 || access(fr, R_OK) < 0) {
+        fprintf(stderr, "archbox: fakechroot tier unavailable: libfakechroot.so/libfakeroot.so not bundled in %s\n", dir);
+        return 126;
+    }
+    if (access(ld, X_OK) < 0) die(ld);
+    /* The loader opens libraries with raw syscalls, which fakechroot cannot translate, so
+       every library path must be a real host path. */
+    snprintf(libpath, sizeof libpath, "%s:%s", dir, rootlib);
+    snprintf(preload, sizeof preload, "%s:%s", fc, fr);
+    char tmp[640];
+    const char *t = getenv("ARCHBOX_TMP");
+    snprintf(tmp, sizeof tmp, "%s", (t && *t) ? t : "/tmp");
+    snprintf(excl, sizeof excl, "/dev:/proc:/sys:%s:%s", dir, tmp);
+
+    char key[32] = "";
+    int have_faked = start_faked(dir, root, ld, libpath, key, sizeof key) == 0;
+    if (!have_faked)
+        fprintf(stderr, "archbox: warning: faked daemon not running: chown/uid emulation off (no libfakeroot)\n");
+
+    const char *term = getenv("TERM");
+    char termbuf[64];
+    snprintf(termbuf, sizeof termbuf, "%s", term ? term : "xterm-256color");
+    clearenv();
+    setenv("TERM", termbuf, 1);
+    setenv("HOME", "/root", 1);
+    setenv("USER", "root", 1);
+    setenv("LOGNAME", "root", 1);
+    setenv("SHELL", "/bin/bash", 1);
+    setenv("LANG", "C.UTF-8", 1);
+    setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/bin", 1);
+    setenv("GLIBC_TUNABLES", "glibc.pthread.rseq=0", 1);
+    /* what `fakechroot` + `chroot <root>` would export */
+    setenv("FAKECHROOT", "true", 1);
+    setenv("FAKECHROOT_BASE", root, 1);
+    setenv("FAKECHROOT_ELFLOADER", ld, 1);                /* execve() of guest ELFs goes via this loader */
+    setenv("FAKECHROOT_EXCLUDE_PATH", excl, 1);
+    setenv("LD_LIBRARY_PATH", libpath, 1);
+    /* what `fakeroot` would export */
+    if (have_faked) {
+        setenv("FAKEROOTKEY", key, 1);
+        setenv("FAKED_MODE", "unknown-is-real", 1);
+        setenv("LD_PRELOAD", preload, 1);
+    } else {
+        setenv("LD_PRELOAD", fc, 1);
+    }
+
+    /* argv[0]: absolute guest paths must be turned into host paths for this first exec */
+    char prog[700], *argv[64];
+    int a = 0;
+    argv[a++] = "ld-linux-aarch64.so.1";
+    argv[a++] = "--library-path"; argv[a++] = libpath;
+    if (cmd[0]) {
+        snprintf(prog, sizeof prog, "%s%s", cmd[0][0] == '/' ? root : "", cmd[0]);
+        argv[a++] = prog;
+        for (int i = 1; cmd[i] && a < 62; i++) argv[a++] = cmd[i];
+    } else {
+        snprintf(prog, sizeof prog, "%s/usr/bin/bash", root);
+        argv[a++] = prog; argv[a++] = "--login";
+    }
+    argv[a] = NULL;
+
+    if (chdir(root) < 0) die("chdir rootfs");
+    child_pid = fork();
+    if (child_pid < 0) die("fork");
+    if (child_pid == 0) {
+        char cwd[700]; snprintf(cwd, sizeof cwd, "%s/root", root);
+        if (chdir(cwd) < 0) chdir(root);
+        execv(ld, argv);
+        fprintf(stderr, "archbox: exec %s: %s\n", ld, strerror(errno));
+        _exit(127);
+    }
+    signal(SIGTERM, forward_fc); signal(SIGHUP, forward_fc); signal(SIGINT, forward_fc);
+    int status = 0;
+    while (waitpid(child_pid, &status, 0) < 0 && errno == EINTR) {}
+    kill_faked();
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
 }
 
 int main(int argc, char **argv) {
@@ -428,14 +590,30 @@ int main(int argc, char **argv) {
     /* One namespace at a time so a failure names the culprit (EINVAL on a combined call only
        says "some flag is unsupported"). The user namespace goes first and is mapped before the
        others, which then run with full caps inside it. */
+    /* Tier selection: unshare -> proot -> fakechroot.
+       ARCHBOX_TIER=unshare|proot|fakechroot pins one tier (ARCHBOX_FORCE_PROOT=1 is kept as
+       an alias for proot). Otherwise each tier must prove itself before the next is tried. */
     const char *ver = getenv("ARCHBOX_VERSION");
-    int force = getenv("ARCHBOX_FORCE_PROOT") != NULL;
-    int ns = force ? -2 : probe_namespaces();
+    const char *pin = getenv("ARCHBOX_TIER");
+    if (!pin && getenv("ARCHBOX_FORCE_PROOT")) pin = "proot";
+    if (pin && !strcmp(pin, "proot")) {
+        fprintf(stderr, "archbox %s: tier pinned to proot\n", ver ? ver : "?");
+        return run_proot(root, argv + 2, tty, 0);
+    }
+    if (pin && !strcmp(pin, "fakechroot")) {
+        fprintf(stderr, "archbox %s: tier pinned to fakechroot\n", ver ? ver : "?");
+        return run_fakechroot(root, argv + 2, tty);
+    }
+    int ns = (pin && !strcmp(pin, "unshare")) ? 0 : probe_namespaces();
     if (ns != 0) {
-        if (ns == -2) fprintf(stderr, "archbox %s: ARCHBOX_FORCE_PROOT set, using proot\n", ver ? ver : "?");
-        else fprintf(stderr, "archbox %s: no namespaces (%s), falling back to proot\n", ver ? ver : "?",
-                     ns > 0 ? strerror(ns) : "blocked");
-        return run_proot(root, argv + 2, tty);
+        fprintf(stderr, "archbox %s: no namespaces (%s)\n", ver ? ver : "?", ns > 0 ? strerror(ns) : "blocked");
+        fprintf(stderr, "archbox %s: testing proot...\n", ver ? ver : "?");
+        if (proot_works(root, tty)) {
+            fprintf(stderr, "archbox %s: proot ok, using proot\n", ver ? ver : "?");
+            return run_proot(root, argv + 2, tty, 0);
+        }
+        fprintf(stderr, "archbox %s: proot failed its filesystem self-test, falling back to fakechroot\n", ver ? ver : "?");
+        return run_fakechroot(root, argv + 2, tty);
     }
     fprintf(stderr, "archbox %s: using namespaces\n", ver ? ver : "?");
 

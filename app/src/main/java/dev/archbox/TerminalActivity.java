@@ -61,14 +61,30 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
 
     static final String VERSION = BuildConfig.GIT_SHA + " sdk" + BuildConfig.TARGET_SDK;
 
+    /**
+     * Optional manual override of the launcher's tier selection (unshare -> proot -> fakechroot):
+     * put one of those words in files/archbox-tier. Absent/empty/unknown = automatic.
+     */
+    private String tierOverride() {
+        try {
+            String t = new String(java.nio.file.Files.readAllBytes(
+                    new java.io.File(getFilesDir(), "archbox-tier").toPath()),
+                    StandardCharsets.UTF_8).trim();
+            return (t.equals("unshare") || t.equals("proot") || t.equals("fakechroot")) ? t : null;
+        } catch (Exception e) { return null; }
+    }
+
     private String[] env() {
-        return new String[]{
+        java.util.List<String> e = new java.util.ArrayList<>(java.util.Arrays.asList(
             "TERM=xterm-256color", "COLORTERM=truecolor",
             "ARCHBOX_VERSION=" + VERSION,
             // targetSdk >= 29 cannot execve() from app data: use the "userland" PRoot there
             "ARCHBOX_USERLAND=" + (BuildConfig.TARGET_SDK >= 29 ? "1" : "0"),
-            "ARCHBOX_TMP=" + new java.io.File(getFilesDir(), "proot-tmp").getPath(),
-        };
+            // scratch dir for proot (tier 2) and for fakechroot's un-translated /tmp-style paths (tier 3)
+            "ARCHBOX_TMP=" + new java.io.File(getFilesDir(), "proot-tmp").getPath()));
+        String tier = tierOverride();
+        if (tier != null) e.add("ARCHBOX_TIER=" + tier);
+        return e.toArray(new String[0]);
     }
 
     private void attach(TerminalSession s) {
