@@ -372,6 +372,11 @@ static int run_proot(const char *root, char **cmd, const char *tty) {
     setenv("PROOT_TMP_DIR", tmp, 1);
     setenv("PROOT_LOADER", loader, 1);
     if (!use_seccomp) setenv("PROOT_NO_SECCOMP", "1", 1);
+    /* Without seccomp acceleration PRoot never detects that this kernel runs the app's seccomp
+       filter *after* the ptrace syscall-enter stop. Every syscall PRoot voids to return an error
+       (ENOENT/EEXIST...) then hits Android's filter as syscall -1 and the tracee sees ENOSYS /
+       SIGSYS. Tell it up front so it suppresses that SIGSYS and restores the result. */
+    setenv("PROOT_ASSUME_NEW_SECCOMP", "1", 1);
 
     char *argv[64];
     int a = 0;
