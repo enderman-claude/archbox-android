@@ -8,6 +8,7 @@
  * stdin/stdout/stderr must be the pty slave: it becomes /dev/console and /dev/ttyS0.
  */
 #define _GNU_SOURCE
+#include <sys/utsname.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <sched.h>
@@ -151,6 +152,28 @@ static int run_init(const char *root, char **cmd, const char *tty) {
     return ret;
 }
 
+/* Report which namespace types this kernel lets an app create (each probed in a throwaway child). */
+static void diagnose(void) {
+    struct { const char *name; int flag; } t[] = {
+        {"user", CLONE_NEWUSER}, {"mnt", CLONE_NEWNS}, {"uts", CLONE_NEWUTS},
+        {"ipc", CLONE_NEWIPC}, {"pid", CLONE_NEWPID}, {"cgroup", CLONE_NEWCGROUP},
+    };
+    struct utsname u;
+    if (uname(&u) == 0) fprintf(stderr, "archbox: kernel %s\n", u.release);
+    for (unsigned i = 0; i < sizeof t / sizeof t[0]; i++) {
+        pid_t p = fork();
+        if (p == 0) _exit(unshare(t[i].flag) < 0 ? errno : 0);
+        int st = 0; waitpid(p, &st, 0);
+        int e = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+        fprintf(stderr, "archbox:   %-6s %s\n", t[i].name, e == 0 ? "ok" : e > 0 ? strerror(e) : "killed (seccomp?)");
+    }
+    char buf[32] = "";
+    FILE *f = fopen("/proc/sys/user/max_user_namespaces", "r");
+    if (f) { if (fgets(buf, sizeof buf, f)) fprintf(stderr, "archbox: max_user_namespaces=%s", buf); fclose(f); }
+    else fprintf(stderr, "archbox: /proc/sys/user/max_user_namespaces missing (CONFIG_USER_NS off?)\n");
+    fprintf(stderr, "archbox: this kernel/ROM does not let apps create the namespaces above.\n");
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "usage: %s <rootfs> [cmd...]\n", argv[0]); return 2; }
     const char *root = argv[1];
@@ -159,15 +182,24 @@ int main(int argc, char **argv) {
     char ttybuf[128] = "";
     if (tty) { snprintf(ttybuf, sizeof ttybuf, "%s", tty); tty = ttybuf; }
 
-    if (unshare(CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWPID) < 0) {
-        fprintf(stderr, "archbox: unshare(user|mnt|uts|ipc|pid): %s\n", strerror(errno));
-        fprintf(stderr, "archbox: this kernel/ROM does not let apps create user namespaces.\n");
+    /* One namespace at a time so a failure names the culprit (EINVAL on a combined call only
+       says "some flag is unsupported"). The user namespace goes first and is mapped before the
+       others, which then run with full caps inside it. */
+    if (unshare(CLONE_NEWUSER) < 0) {
+        int e = errno;
+        fprintf(stderr, "archbox: unshare(user): %s\n", strerror(e));
+        diagnose();
         return 126;
     }
     char map[64];
     write_file("/proc/self/setgroups", "deny");
     snprintf(map, sizeof map, "0 %u 1\n", uid);  write_file("/proc/self/uid_map", map);
     snprintf(map, sizeof map, "0 %u 1\n", gid);  write_file("/proc/self/gid_map", map);
+
+    if (unshare(CLONE_NEWNS) < 0)  { fprintf(stderr, "archbox: unshare(mnt): %s\n", strerror(errno));  diagnose(); return 126; }
+    if (unshare(CLONE_NEWPID) < 0) { fprintf(stderr, "archbox: unshare(pid): %s\n", strerror(errno));  diagnose(); return 126; }
+    if (unshare(CLONE_NEWUTS) < 0) warn("uts namespace skipped");
+    if (unshare(CLONE_NEWIPC) < 0) warn("ipc namespace skipped");
 
     if (unshare(CLONE_NEWCGROUP) < 0) warn("cgroup namespace skipped");
     /* No network namespace on purpose: without CAP_NET_ADMIN on the host there is
