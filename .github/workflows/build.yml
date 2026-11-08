@@ -24,6 +24,9 @@ jobs:
           "$CC" -O2 -Wall -fPIE -pie -Wl,-z,max-page-size=16384 \
             -o app/src/main/jniLibs/arm64-v8a/libarchbox.so native/archbox.c
           file app/src/main/jniLibs/arm64-v8a/libarchbox.so
+          # turns off heap pointer tagging inside PRoot (see native/notag.c)
+          "$CC" -O2 -fPIC -shared -o app/src/main/jniLibs/arm64-v8a/libnotag.so native/notag.c
+          file app/src/main/jniLibs/arm64-v8a/libnotag.so
 
       # Fallback for kernels without user namespaces (like this phone's): PRoot, prebuilt for Android
       # (green-green-avk/build-proot-android, pinned commit + sha256). Shipped as lib*.so because
@@ -41,6 +44,11 @@ jobs:
           cp proot-x/root/bin/proot           $J/libproot.so
           cp proot-x/root/bin/proot-userland  $J/libproot-userland.so
           cp proot-x/root/libexec/proot/loader $J/libproot-loader.so
+          sudo apt-get install -y -qq patchelf
+          for f in libproot.so libproot-userland.so; do
+            patchelf --add-needed libnotag.so --set-rpath '$ORIGIN' "$J/$f"
+            readelf -d "$J/$f" | grep -E "NEEDED|RUNPATH"
+          done
           file $J/libproot*.so
 
       - uses: gradle/actions/setup-gradle@v4

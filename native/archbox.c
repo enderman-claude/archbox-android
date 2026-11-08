@@ -198,6 +198,10 @@ static int probe_namespaces(void) {
 #include <elf.h>
 #include <stdint.h>
 #include <time.h>
+#include <malloc.h>
+#ifndef M_BIONIC_SET_HEAP_TAGGING_LEVEL
+#define M_BIONIC_SET_HEAP_TAGGING_LEVEL (-204)
+#endif
 
 #ifndef NT_PRSTATUS
 #define NT_PRSTATUS 1
@@ -234,6 +238,9 @@ static void ptrace_probe(void) {
     char *heap = malloc(32);
     strcpy(heap, "probe");
     volatile long stackv = 0x1234;
+    int mo = mallopt(M_BIONIC_SET_HEAP_TAGGING_LEVEL, 0);   /* heap tagging off from here on */
+    char *heap2 = malloc(32);
+    strcpy(heap2, "probe");
     errno = 0;
     pid_t c = fork();
     if (c < 0) { fprintf(stderr, "  fork: %s\n", strerror(errno)); return; }
@@ -254,6 +261,9 @@ static void ptrace_probe(void) {
     errno = 0;
     long w = ptrace(PTRACE_PEEKDATA, c, heap, 0);
     fprintf(stderr, "  peek heap %p: %s\n", (void *)heap, errno ? strerror(errno) : "ok");
+    errno = 0;
+    w = ptrace(PTRACE_PEEKDATA, c, heap2, 0);
+    fprintf(stderr, "  mallopt(notag)=%d, new heap %p: %s\n", mo, (void *)heap2, errno ? strerror(errno) : "ok");
     errno = 0;
     w = ptrace(PTRACE_PEEKDATA, c, (void *)&stackv, 0); (void)w;
     fprintf(stderr, "  peek stack %p: %s\n", (void *)&stackv, errno ? strerror(errno) : "ok");
