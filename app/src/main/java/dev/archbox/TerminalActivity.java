@@ -1,6 +1,10 @@
 package dev.archbox;
 
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.os.SystemClock;
 import android.content.Context;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -21,24 +25,35 @@ import com.termux.terminal.TerminalSessionClient;
 import com.termux.view.TerminalView;
 import com.termux.view.TerminalViewClient;
 
+import java.io.File;
 import java.nio.charset.StandardCharsets;
 
 /**
- * The whole app is one terminal. First launch: a throwaway session shows download/extract
- * progress. Then a session running libarchbox.so (the namespace launcher) takes over; its
- * pty slave is the container's /dev/console and /dev/ttyS0.
+ * The terminal. Installing the rootfs is OnboardingActivity/InstallService's job; this runs
+ * libarchbox.so (the container launcher, three backends) on a pty that becomes the container's
+ * /dev/console and /dev/ttyS0.
  */
 public class TerminalActivity extends Activity implements TerminalSessionClient, TerminalViewClient {
+    private static final int MIN_SP = 8, MAX_SP = 40, DEF_SP = 14;
     private TerminalView view;
     private TerminalSession session;
     private Bootstrap bootstrap;
-    private boolean ctrl, bootstrapStarted;
-    private Button ctrlButton;
+    private boolean ctrl, alt, volDown;
+    private Button ctrlButton, altButton;
+    private SharedPreferences prefs;
+    private int textSp;
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
         Crumbs.add(this, "TerminalActivity.onCreate");
         bootstrap = new Bootstrap(getFilesDir());
+        if (!bootstrap.installed()) {                       // nothing to boot yet: onboarding does the install
+            startActivity(new Intent(this, OnboardingActivity.class));
+            finish();
+            return;
+        }
+        prefs = getSharedPreferences("archbox", MODE_PRIVATE);
+        textSp = prefs.getInt("textSp", DEF_SP);
 
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
@@ -47,29 +62,24 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
         Crumbs.add(this, "creating TerminalView");
         view = new TerminalView(this, null);
         view.setTerminalViewClient(this);
-        view.setTextSize((int) (14 * getResources().getDisplayMetrics().scaledDensity));
+        applyTextSize();
         view.setKeepScreenOn(true);
         col.addView(view, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         col.addView(extraKeys());
         setContentView(col);
 
-        Crumbs.add(this, "views ready, installed=" + bootstrap.installed());
-        if (bootstrap.installed()) startContainer();
-        else attach(new TerminalSession("/system/bin/sleep", getFilesDir().getPath(),
-                new String[]{"sleep", "2147483647"}, env(), 2000, this));
+        Crumbs.add(this, "views ready");
+        startContainer();
     }
 
     static final String VERSION = BuildConfig.GIT_SHA + " sdk" + BuildConfig.TARGET_SDK;
 
-    /**
-     * Optional manual override of the launcher's tier selection (unshare -> proot -> fakechroot):
-     * put one of those words in files/archbox-tier. Absent/empty/unknown = automatic.
-     */
+    private File tierFile() { return new File(getFilesDir(), "archbox-tier"); }
+
+    /** Manual backend override written by the menu: unshare | proot | fakechroot (absent = automatic). */
     private String tierOverride() {
         try {
-            String t = new String(java.nio.file.Files.readAllBytes(
-                    new java.io.File(getFilesDir(), "archbox-tier").toPath()),
-                    StandardCharsets.UTF_8).trim();
+            String t = new String(java.nio.file.Files.readAllBytes(tierFile().toPath()), StandardCharsets.UTF_8).trim();
             return (t.equals("unshare") || t.equals("proot") || t.equals("fakechroot")) ? t : null;
         } catch (Exception e) { return null; }
     }
@@ -81,7 +91,7 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
             // targetSdk >= 29 cannot execve() from app data: use the "userland" PRoot there
             "ARCHBOX_USERLAND=" + (BuildConfig.TARGET_SDK >= 29 ? "1" : "0"),
             // scratch dir for proot (tier 2) and for fakechroot's un-translated /tmp-style paths (tier 3)
-            "ARCHBOX_TMP=" + new java.io.File(getFilesDir(), "proot-tmp").getPath()));
+            "ARCHBOX_TMP=" + new File(getFilesDir(), "proot-tmp").getPath()));
         String tier = tierOverride();
         if (tier != null) e.add("ARCHBOX_TIER=" + tier);
         return e.toArray(new String[0]);
@@ -102,55 +112,140 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
                 new String[]{"archbox", bootstrap.root().getPath()}, env(), 4000, this));
     }
 
-    private void runBootstrap(final TerminalSession progressSession) {
-        new Thread(() -> {
-            try {
-                bootstrap.run(s -> runOnUiThread(() -> {
-                    if (progressSession.getEmulator() == null) return;
-                    byte[] bytes = s.replace("\n", "\r\n").getBytes(StandardCharsets.UTF_8);
-                    progressSession.getEmulator().append(bytes, bytes.length);
-                    view.onScreenUpdated();
-                }));
-                runOnUiThread(() -> { progressSession.finishIfRunning(); startContainer(); });
-            } catch (Exception e) {
-                runOnUiThread(() -> {
-                    String msg = "\r\n\u001b[1;31mBootstrap failed: " + e + "\u001b[0m\r\nRelaunch the app to retry.\r\n";
-                    byte[] bytes = msg.getBytes(StandardCharsets.UTF_8);
-                    if (progressSession.getEmulator() != null) {
-                        progressSession.getEmulator().append(bytes, bytes.length);
-                        view.onScreenUpdated();
+    private void restartContainer() {
+        TerminalSession old = session;
+        startContainer();                                   // `session` now points at the new one
+        if (old != null) old.finishIfRunning();
+    }
+
+    // ---- text size (pinch to zoom, menu) -------------------------------------------------
+
+    private void applyTextSize() {
+        view.setTextSize((int) (textSp * getResources().getDisplayMetrics().scaledDensity));
+    }
+
+    private void changeTextSize(int delta) {
+        textSp = Math.max(MIN_SP, Math.min(MAX_SP, textSp + delta));
+        prefs.edit().putInt("textSp", textSp).apply();
+        applyTextSize();
+    }
+
+    // ---- menu ----------------------------------------------------------------------------
+
+    private void showMenu() {
+        String[] items = {"Restart session", "Backend: " + (tierOverride() == null ? "auto" : tierOverride()) + "...",
+                "Text larger", "Text smaller", "Reinstall rootfs..."};
+        new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("Archbox " + VERSION)
+                .setItems(items, (d, which) -> {
+                    switch (which) {
+                        case 0: restartContainer(); break;
+                        case 1: chooseBackend(); break;
+                        case 2: changeTextSize(+2); break;
+                        case 3: changeTextSize(-2); break;
+                        case 4: confirmReinstall(); break;
                     }
-                });
-            }
-        }, "bootstrap").start();
+                }).show();
+    }
+
+    private void chooseBackend() {
+        final String[] values = {null, "unshare", "proot", "fakechroot"};
+        String[] labels = {"Automatic (unshare, then proot, then fakechroot)", "unshare (namespaces)",
+                "proot", "fakechroot"};
+        new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("Container backend")
+                .setItems(labels, (d, which) -> {
+                    if (values[which] == null) tierFile().delete();
+                    else try {
+                        java.nio.file.Files.write(tierFile().toPath(), values[which].getBytes(StandardCharsets.UTF_8));
+                    } catch (Exception e) { android.widget.Toast.makeText(this, "" + e, android.widget.Toast.LENGTH_LONG).show(); }
+                    restartContainer();
+                }).show();
+    }
+
+    private void confirmReinstall() {
+        new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("Reinstall rootfs?")
+                .setMessage("This deletes everything inside the Arch system (packages, files in /root). "
+                        + "A cached tarball is kept, so reinstalling does not need to download again.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Delete and reinstall", (d, w) -> {
+                    if (session != null) session.finishIfRunning();
+                    android.widget.Toast.makeText(this, "Deleting...", android.widget.Toast.LENGTH_SHORT).show();
+                    new Thread(() -> {
+                        bootstrap.uninstall();
+                        runOnUiThread(() -> {
+                            startActivity(new Intent(this, OnboardingActivity.class));
+                            finish();
+                        });
+                    }, "uninstall").start();
+                }).show();
+    }
+
+    private void sendKey(int code) {
+        long t = SystemClock.uptimeMillis();
+        view.dispatchKeyEvent(new KeyEvent(t, t, KeyEvent.ACTION_DOWN, code, 0));
+        view.dispatchKeyEvent(new KeyEvent(t, t, KeyEvent.ACTION_UP, code, 0));
+        clearSticky();
+    }
+
+    private void clearSticky() {
+        ctrl = false; alt = false;
+        if (ctrlButton != null) ctrlButton.setAlpha(0.6f);
+        if (altButton != null) altButton.setAlpha(0.6f);
+    }
+
+    private Button key(String label, Runnable action) {
+        Button btn = new Button(this);
+        btn.setText(label);
+        btn.setAllCaps(false);
+        btn.setTextSize(12);
+        btn.setMinWidth(0);
+        btn.setMinimumWidth(0);
+        btn.setPadding(0, 0, 0, 0);
+        btn.setOnClickListener(v -> action.run());
+        return btn;
+    }
+
+    private LinearLayout keyRow(Button... buttons) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        for (Button btn : buttons) row.addView(btn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        return row;
     }
 
     private View extraKeys() {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        String[] labels = {"ESC", "CTRL", "TAB", "\u2190", "\u2193", "\u2191", "\u2192", "\u2328"};
-        String[] seqs = {"\u001b", null, "\t", "\u001b[D", "\u001b[B", "\u001b[A", "\u001b[C", "KEYBOARD"};
-        for (int i = 0; i < labels.length; i++) {
-            Button btn = new Button(this);
-            btn.setText(labels[i]);
-            btn.setAllCaps(false);
-            btn.setTextSize(12);
-            btn.setMinWidth(0);
-            btn.setMinimumWidth(0);
-            final String seq = seqs[i];
-            if ("KEYBOARD".equals(seq)) {
-                btn.setTextSize(16);
-                btn.setOnClickListener(v -> toggleKeyboard());
-            } else if (seq == null) {
-                ctrlButton = btn;
-                btn.setOnClickListener(v -> { ctrl = !ctrl; btn.setAlpha(ctrl ? 1f : 0.6f); });
-                btn.setAlpha(0.6f);
-            } else {
-                btn.setOnClickListener(v -> { if (session != null) session.write(seq); });
-            }
-            row.addView(btn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        }
-        return row;
+        ctrlButton = key("CTRL", () -> { ctrl = !ctrl; ctrlButton.setAlpha(ctrl ? 1f : 0.6f); });
+        altButton = key("ALT", () -> { alt = !alt; altButton.setAlpha(alt ? 1f : 0.6f); });
+        ctrlButton.setAlpha(0.6f);
+        altButton.setAlpha(0.6f);
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.addView(keyRow(
+                key("ESC", () -> sendKey(KeyEvent.KEYCODE_ESCAPE)),
+                key("TAB", () -> sendKey(KeyEvent.KEYCODE_TAB)),
+                ctrlButton, altButton,
+                key("\u2190", () -> sendKey(KeyEvent.KEYCODE_DPAD_LEFT)),
+                key("\u2193", () -> sendKey(KeyEvent.KEYCODE_DPAD_DOWN)),
+                key("\u2191", () -> sendKey(KeyEvent.KEYCODE_DPAD_UP)),
+                key("\u2192", () -> sendKey(KeyEvent.KEYCODE_DPAD_RIGHT)),
+                key("\u2328", this::toggleKeyboard)));
+        col.addView(keyRow(
+                key("-", () -> typeChar("-")),
+                key("/", () -> typeChar("/")),
+                key("|", () -> typeChar("|")),
+                key("~", () -> typeChar("~")),
+                key("HOME", () -> sendKey(KeyEvent.KEYCODE_MOVE_HOME)),
+                key("END", () -> sendKey(KeyEvent.KEYCODE_MOVE_END)),
+                key("PGUP", () -> sendKey(KeyEvent.KEYCODE_PAGE_UP)),
+                key("PGDN", () -> sendKey(KeyEvent.KEYCODE_PAGE_DOWN)),
+                key("\u22ee", this::showMenu)));
+        return col;
+    }
+
+    private void typeChar(String c) {
+        if (session != null && session.isRunning()) session.write(c);
+        clearSticky();
     }
 
     private boolean kbShown;
@@ -182,14 +277,20 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
 
     @Override protected void onDestroy() {
         super.onDestroy();
-        if (session != null) session.finishIfRunning();
+        if (session != null && isFinishing()) session.finishIfRunning();
     }
 
     // ---- TerminalSessionClient --------------------------------------------
     @Override public void onTextChanged(@NonNull TerminalSession s) { view.onScreenUpdated(); }
     @Override public void onTitleChanged(@NonNull TerminalSession s) { }
     @Override public void onSessionFinished(@NonNull TerminalSession s) {
-        if (s == session && bootstrap.installed() && s.getExitStatus() == 0) finish();
+        if (s != session) return;                           // an old session replaced by a restart
+        if (s.getExitStatus() == 0 && bootstrap.installed()) { finish(); return; }
+        if (s.getEmulator() != null) {                      // keep the output readable, offer a restart
+            byte[] msg = "\r\n[archbox: press Enter to restart the container]\r\n".getBytes(StandardCharsets.UTF_8);
+            s.getEmulator().append(msg, msg.length);
+            view.onScreenUpdated();
+        }
     }
     @Override public void onCopyTextToClipboard(@NonNull TerminalSession s, String text) {
         ((android.content.ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE))
@@ -215,7 +316,10 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
     @Override public void logStackTrace(String tag, Exception e) { android.util.Log.e(tag, "error", e); }
 
     // ---- TerminalViewClient -------------------------------------------------
-    @Override public float onScale(float scale) { return scale; }
+    @Override public float onScale(float scale) {
+        if (scale < 0.9f || scale > 1.1f) { changeTextSize(scale > 1f ? +1 : -1); return 1.0f; }
+        return scale;
+    }
     @Override public void onSingleTapUp(MotionEvent e) {
         ((InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE)).showSoftInput(view, 0);
     }
@@ -224,22 +328,23 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
     @Override public boolean shouldUseCtrlSpaceWorkaround() { return false; }
     @Override public boolean isTerminalViewSelected() { return true; }
     @Override public void copyModeChanged(boolean copyMode) { }
-    @Override public boolean onKeyDown(int keyCode, KeyEvent e, TerminalSession s) { return false; }
-    @Override public boolean onKeyUp(int keyCode, KeyEvent e) { return false; }
+    @Override public boolean onKeyDown(int keyCode, KeyEvent e, TerminalSession s) {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) { volDown = true; return true; }   // Vol-down = Ctrl (like Termux)
+        if (keyCode == KeyEvent.KEYCODE_ENTER && s != null && !s.isRunning()) { restartContainer(); return true; }
+        return false;
+    }
+    @Override public boolean onKeyUp(int keyCode, KeyEvent e) {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) { volDown = false; return true; }
+        return false;
+    }
     @Override public boolean onLongPress(MotionEvent event) { return false; }
-    @Override public boolean readControlKey() { return ctrl; }
-    @Override public boolean readAltKey() { return false; }
+    @Override public boolean readControlKey() { return ctrl || volDown; }
+    @Override public boolean readAltKey() { return alt; }
     @Override public boolean readShiftKey() { return false; }
     @Override public boolean readFnKey() { return false; }
     @Override public boolean onCodePoint(int codePoint, boolean ctrlDown, TerminalSession s) {
-        if (ctrl) { ctrl = false; if (ctrlButton != null) ctrlButton.setAlpha(0.6f); }
+        if (ctrl || alt) clearSticky();
         return false;
     }
-    @Override public void onEmulatorSet() {
-        if (!bootstrap.installed() && !bootstrapStarted && session != null) {
-            Crumbs.add(this, "emulator ready, starting bootstrap");
-            bootstrapStarted = true;
-            runBootstrap(session);
-        }
-    }
+    @Override public void onEmulatorSet() { }
 }

@@ -1,9 +1,14 @@
 package dev.archbox;
 
+import android.content.ContentResolver;
+import android.database.Cursor;
+import android.net.Uri;
+import android.provider.OpenableColumns;
 import android.system.Os;
 
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
+import org.apache.commons.compress.compressors.xz.XZCompressorInputStream;
 
 import java.io.*;
 import java.net.HttpURLConnection;
@@ -14,9 +19,31 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.zip.GZIPInputStream;
 
-/** Downloads Arch Linux ARM (aarch64) and unpacks + configures it for the namespace launcher. */
+/**
+ * Gets an Arch Linux ARM (aarch64) rootfs onto disk and configures it for the launcher.
+ * Runs on a worker thread inside InstallService, never on the UI thread. The tarball can come
+ * from a (resumable) download, from the cached copy of an earlier download, or from a file the
+ * user picked with the system file picker.
+ */
 final class Bootstrap {
-    interface Out { void print(String s); }
+    /** Receives progress. Called from the worker thread. */
+    interface Listener {
+        void log(String s);
+        /** total <= 0 means unknown */
+        void progress(String phase, long done, long total);
+    }
+
+    static final class Cancelled extends IOException { Cancelled() { super("cancelled"); } }
+
+    static final class Request {
+        enum Kind { DOWNLOAD, CACHED, FILE }
+        final Kind kind; final Uri file, export; final boolean keep;
+        Request(Kind kind, Uri file, Uri export, boolean keep) {
+            this.kind = kind; this.file = file; this.export = export; this.keep = keep;
+        }
+    }
+
+    static final String VERSION = BuildConfig.GIT_SHA + " sdk" + BuildConfig.TARGET_SDK;
 
     // os.archlinuxarm.org has no valid TLS certificate for its own hostname, so use HTTPS on the
     // official mirrors (list from archlinuxarm/PKGBUILDs core/pacman-mirrorlist, 2025-10-26;
@@ -45,35 +72,87 @@ final class Bootstrap {
     }
     private String chosen = URLS[0];
 
-    private final File root, tarball, marker;
+    private final File root, cache, part, marker, procTmp;
     private long lastTick;
+    private volatile boolean cancelled;
 
     Bootstrap(File filesDir) {
         root = new File(filesDir, "arch");
-        tarball = new File(filesDir, "arch.tar.gz");
+        cache = new File(filesDir, "arch.tar.gz");          // finished download, kept for reinstalls
+        part = new File(filesDir, "arch.tar.gz.part");      // unfinished download, resumed with Range
+        procTmp = new File(filesDir, "proot-tmp");
         marker = new File(root, ".archbox-installed");
     }
 
     File root() { return root; }
     boolean installed() { return marker.exists(); }
+    void cancel() { cancelled = true; }
 
-    void run(Out out) throws Exception {
-        out.print("\u001b[1;36m== Archbox first boot (" + TerminalActivity.VERSION + ") ==\u001b[0m\n");
-        out.print("Downloading Arch Linux ARM (aarch64)...\n");
-        String md5 = download(out);
-        String expected = fetchMd5();
-        if (expected != null && !expected.equalsIgnoreCase(md5))
-            throw new IOException("md5 mismatch: got " + md5 + ", expected " + expected);
-        out.print(expected != null ? "\nmd5 ok: " + md5 + "\n" : "\n(no .md5 published, skipping check)\n");
+    /** The cached tarball from an earlier download, or null. */
+    File cached() { return cache.isFile() && cache.length() > 0 ? cache : null; }
+    void clearCache() { cache.delete(); part.delete(); }
+    /** Bytes of an unfinished download on disk (0 if none). */
+    long partial() { return part.isFile() ? part.length() : 0; }
 
-        out.print("Extracting rootfs (this takes a few minutes)...\n");
+    /** Removes the installed rootfs but keeps the cached tarball. */
+    void uninstall() {
+        deleteRecursive(root);
+        deleteRecursive(procTmp);
+    }
+
+    static String nameOf(ContentResolver cr, Uri u) {
+        try (Cursor c = cr.query(u, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (c != null && c.moveToFirst() && !c.isNull(0)) return c.getString(0);
+        } catch (Exception ignored) { }
+        String p = u.getLastPathSegment();
+        return p == null ? u.toString() : p;
+    }
+
+    static long sizeOf(ContentResolver cr, Uri u) {
+        try (Cursor c = cr.query(u, new String[]{OpenableColumns.SIZE}, null, null, null)) {
+            if (c != null && c.moveToFirst() && !c.isNull(0)) return c.getLong(0);
+        } catch (Exception ignored) { }
+        return -1;
+    }
+
+    void run(Request req, ContentResolver cr, Listener l) throws Exception {
+        cancelled = false;
+        l.log("== Archbox install (" + VERSION + ") ==\n");
+        File tar = null;
+        if (req.kind == Request.Kind.DOWNLOAD) {
+            tar = download(l);
+            if (req.export != null) exportCopy(tar, req.export, cr, l);
+        } else if (req.kind == Request.Kind.CACHED) {
+            tar = cached();
+            if (tar == null) throw new IOException("no cached download found");
+            l.log("Using the cached download (no network needed).\n");
+        }
+
+        l.log("Extracting rootfs...\n");
         deleteRecursive(root);
         root.mkdirs();
-        extract(out);
+        if (req.kind == Request.Kind.FILE) {
+            long total = sizeOf(cr, req.file);
+            l.log("From: " + nameOf(cr, req.file) + "\n");
+            try (InputStream in = cr.openInputStream(req.file)) {
+                if (in == null) throw new IOException("cannot open " + req.file);
+                extract(in, total, l);
+            }
+        } else {
+            try (InputStream in = new FileInputStream(tar)) { extract(in, tar.length(), l); }
+        }
+        check();
         configure();
-        tarball.delete();
+        if (req.kind == Request.Kind.DOWNLOAD && !req.keep) tar.delete();
         if (!marker.createNewFile()) throw new IOException("cannot write marker");
-        out.print("\nDone. Starting container...\n");
+        l.log("\nDone.\n");
+    }
+
+    /** A wrong archive (x86 rootfs, a data tarball...) should fail here, not as a broken container. */
+    private void check() throws IOException {
+        if (!new File(root, "usr/lib/ld-linux-aarch64.so.1").exists())
+            throw new IOException("this does not look like an Arch Linux ARM aarch64 rootfs "
+                    + "(/usr/lib/ld-linux-aarch64.so.1 is missing)");
     }
 
     // ---- download -------------------------------------------------------
@@ -85,8 +164,8 @@ final class Bootstrap {
     }
 
     /** Probe every mirror at once (HEAD of the tarball, includes TLS handshake); fastest working first. */
-    private List<String> rank(Out out) throws Exception {
-        out.print("Testing mirrors...\n");
+    private List<String> rank(Listener out) throws Exception {
+        out.log("Testing mirrors...\n");
         java.util.concurrent.ExecutorService ex = java.util.concurrent.Executors.newFixedThreadPool(URLS.length);
         List<Probe> probes = new ArrayList<>();
         List<java.util.concurrent.Future<?>> fs = new ArrayList<>();
@@ -113,8 +192,8 @@ final class Bootstrap {
         ex.shutdownNow();
         List<Probe> ok = new ArrayList<>();
         for (Probe pr : probes) {
-            if (pr.ms != Long.MAX_VALUE) { ok.add(pr); out.print("  " + pr.host() + "  " + pr.ms + " ms\n"); }
-            else out.print("  " + pr.host() + "  \u001b[33mfailed: " + (pr.err == null ? "timeout" : pr.err) + "\u001b[0m\n");
+            if (pr.ms != Long.MAX_VALUE) { ok.add(pr); out.log("  " + pr.host() + "  " + pr.ms + " ms\n"); }
+            else out.log("  " + pr.host() + "  failed: " + (pr.err == null ? "timeout" : pr.err) + "\n");
         }
         java.util.Collections.sort(ok, (x, y) -> Long.compare(x.ms, y.ms));
         List<String> ranked = new ArrayList<>();
@@ -122,45 +201,82 @@ final class Bootstrap {
         return ranked;
     }
 
-    private String download(Out out) throws Exception {
-        List<String> ranked = rank(out);
+    /** Downloads (or resumes) the tarball into the cache and returns it. */
+    private File download(Listener l) throws Exception {
+        List<String> ranked = rank(l);
+        if (cancelled) throw new Cancelled();
         if (ranked.isEmpty()) throw new IOException("no mirror reachable (see list above)");
         Exception last = null;
         for (String u : ranked) {
             try {
-                out.print("Downloading from " + u.split("/")[2] + "\n");
-                String md5 = downloadFrom(u, out);
+                l.log("Downloading from " + u.split("/")[2] + "\n");
+                String md5 = downloadFrom(u, l);
                 chosen = u;
-                return md5;
+                String expected = fetchMd5();
+                if (expected != null && !expected.equalsIgnoreCase(md5)) {
+                    part.delete();
+                    throw new IOException("md5 mismatch: got " + md5 + ", expected " + expected);
+                }
+                l.log(expected != null ? "md5 ok: " + md5 + "\n" : "(no .md5 published, skipping check)\n");
+                cache.delete();
+                if (!part.renameTo(cache)) throw new IOException("cannot move the download into place");
+                return cache;
+            } catch (Cancelled c) {
+                throw c;
             } catch (Exception e) {
                 last = e;
-                out.print("\n\u001b[33mdownload failed: " + e + "\u001b[0m\n");
+                l.log("download failed: " + e + (part.length() > 0 ? " (progress is kept, it will resume)" : "") + "\n");
             }
         }
         throw new IOException("all mirrors failed, last error: " + last);
     }
 
-    private String downloadFrom(String u, Out out) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL(u).openConnection();
-        c.setConnectTimeout(20000);
-        c.setReadTimeout(30000);
-        if (c.getResponseCode() != 200) throw new IOException("HTTP " + c.getResponseCode());
-        long total = c.getContentLengthLong();
-        MessageDigest md = MessageDigest.getInstance("MD5");
-        long done = 0;
-        try (InputStream in = c.getInputStream(); OutputStream o = new FileOutputStream(tarball)) {
-            byte[] buf = new byte[1 << 16];
-            int n;
-            while ((n = in.read(buf)) > 0) {
-                o.write(buf, 0, n);
-                md.update(buf, 0, n);
-                done += n;
-                progress(out, "download", done, total);
-            }
-        }
+    private static String hex(byte[] d) {
         StringBuilder sb = new StringBuilder();
-        for (byte b : md.digest()) sb.append(String.format("%02x", b));
+        for (byte b : d) sb.append(String.format("%02x", b));
         return sb.toString();
+    }
+
+    /** Appends to arch.tar.gz.part (resuming with a Range request); returns the md5 of the whole file. */
+    private String downloadFrom(String u, Listener l) throws Exception {
+        for (int attempt = 0; attempt < 2; attempt++) {
+            long have = part.exists() ? part.length() : 0;
+            HttpURLConnection c = (HttpURLConnection) new URL(u).openConnection();
+            c.setConnectTimeout(20000);
+            c.setReadTimeout(30000);
+            if (have > 0) c.setRequestProperty("Range", "bytes=" + have + "-");
+            int code = c.getResponseCode();
+            if (code == 416) { c.disconnect(); part.delete(); continue; }   // stale partial: start over
+            if (code != 200 && code != 206) throw new IOException("HTTP " + code);
+            boolean resume = code == 206 && have > 0;
+            if (!resume) have = 0;
+            long len = c.getContentLengthLong();
+            long total = len > 0 ? have + len : -1;
+            MessageDigest md = MessageDigest.getInstance("MD5");
+            if (resume) {
+                l.log("Resuming at " + (have >> 20) + " MiB\n");
+                try (InputStream old = new FileInputStream(part)) {
+                    byte[] buf = new byte[1 << 16]; int n;
+                    while ((n = old.read(buf)) > 0) { md.update(buf, 0, n); if (cancelled) throw new Cancelled(); }
+                }
+            }
+            long done = have;
+            try (InputStream in = c.getInputStream(); OutputStream o = new FileOutputStream(part, resume)) {
+                byte[] buf = new byte[1 << 16];
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    if (cancelled) throw new Cancelled();
+                    o.write(buf, 0, n);
+                    md.update(buf, 0, n);
+                    done += n;
+                    progress(l, "Downloading", done, total);
+                }
+            }
+            if (total > 0 && done < total) throw new IOException("connection closed early at " + (done >> 20) + " MiB");
+            progress(l, "Downloading", done, done);
+            return hex(md.digest());
+        }
+        throw new IOException("server rejected the range request");
     }
 
     private String fetchMd5() {
@@ -177,13 +293,32 @@ final class Bootstrap {
         }
     }
 
-    private void progress(Out out, String what, long done, long total) {
+    /** Copies the downloaded tarball to a location the user picked (survives uninstalling the app). */
+    private void exportCopy(File src, Uri dst, ContentResolver cr, Listener l) throws Exception {
+        l.log("Saving a copy of the tarball...\n");
+        try (InputStream in = new FileInputStream(src); OutputStream o = cr.openOutputStream(dst, "w")) {
+            if (o == null) throw new IOException("cannot open the destination");
+            byte[] buf = new byte[1 << 16]; int n; long done = 0, total = src.length();
+            while ((n = in.read(buf)) > 0) {
+                if (cancelled) throw new Cancelled();
+                o.write(buf, 0, n);
+                done += n;
+                progress(l, "Saving copy", done, total);
+            }
+            progress(l, "Saving copy", total, total);
+            l.log("Copy saved.\n");
+        } catch (Cancelled c) {
+            throw c;
+        } catch (Exception e) {
+            l.log("Could not save the copy (continuing): " + e + "\n");   // not fatal
+        }
+    }
+
+    private void progress(Listener l, String what, long done, long total) {
         long now = System.currentTimeMillis();
         if (now - lastTick < 250 && done != total) return;
         lastTick = now;
-        String pct = total > 0 ? String.format(" %3d%%", done * 100 / total) : "";
-        out.print(String.format("\r\u001b[K%s: %d MiB%s", what, done >> 20,
-                total > 0 ? " / " + (total >> 20) + " MiB" + pct : ""));
+        l.progress(what, done, total);
     }
 
     // ---- extraction -----------------------------------------------------
@@ -216,15 +351,30 @@ final class Bootstrap {
         }
     }
 
-    private void extract(Out out) throws Exception {
-        long total = tarball.length();
+    /** Picks the decompressor from the magic bytes: .tar, .tar.gz and .tar.xz are accepted. */
+    private static InputStream decompress(BufferedInputStream bin) throws IOException {
+        bin.mark(8);
+        byte[] m = new byte[6];
+        int n = 0;
+        while (n < m.length) { int r = bin.read(m, n, m.length - n); if (r < 0) break; n += r; }
+        bin.reset();
+        if (n >= 2 && (m[0] & 0xff) == 0x1f && (m[1] & 0xff) == 0x8b) return new GZIPInputStream(bin, 1 << 16);
+        if (n >= 6 && (m[0] & 0xff) == 0xfd && m[1] == '7' && m[2] == 'z' && m[3] == 'X' && m[4] == 'Z' && m[5] == 0)
+            return new XZCompressorInputStream(bin);
+        if (n >= 4 && (m[0] & 0xff) == 0x28 && (m[1] & 0xff) == 0xb5 && (m[2] & 0xff) == 0x2f && (m[3] & 0xff) == 0xfd)
+            throw new IOException(".zst archives are not supported: use .tar.gz, .tar.xz or .tar");
+        return bin;                                         // plain tar
+    }
+
+    private void extract(InputStream raw, long total, Listener out) throws Exception {
         List<String[]> dirModes = new ArrayList<>();
-        Counting cnt = new Counting(new BufferedInputStream(new FileInputStream(tarball), 1 << 16));
+        Counting cnt = new Counting(raw);
         String current = "?";
-        try (TarArchiveInputStream tin = new TarArchiveInputStream(new GZIPInputStream(cnt, 1 << 16))) {
+        try (TarArchiveInputStream tin = new TarArchiveInputStream(decompress(new BufferedInputStream(cnt, 1 << 16)))) {
             TarArchiveEntry e;
             byte[] buf = new byte[1 << 16];
             while ((e = tin.getNextTarEntry()) != null) {
+                if (cancelled) throw new Cancelled();
                 String name = clean(e.getName());
                 current = name;
                 if (name.isEmpty() || name.equals(".") || ("../" + name + "/").contains("/../")) continue;
@@ -235,7 +385,7 @@ final class Bootstrap {
                 if (parent != null && !parent.exists()) parent.mkdirs();
                 // An absolute symlink earlier in the archive must never redirect writes onto the host fs.
                 if (parent != null && escapesRoot(f)) {
-                    out.print("\n\u001b[33mskipping (path escapes rootfs): " + name + "\u001b[0m\n");
+                    out.log("skipping (path escapes rootfs): " + name + "\n");
                     continue;
                 }
 
@@ -273,7 +423,7 @@ final class Bootstrap {
                     throw new IOException("extracting '" + name + "' (mode " + Integer.toOctalString(mode)
                             + ", type " + (char) e.getLinkFlag() + "): " + ex, ex);
                 }
-                progress(out, "extract", cnt.count, total);
+                progress(out, "Extracting", cnt.count, total);
             }
         } catch (IOException ex) {
             throw ex;
@@ -284,7 +434,7 @@ final class Bootstrap {
         for (int i = dirModes.size() - 1; i >= 0; i--) {
             try { Os.chmod(dirModes.get(i)[0], Integer.parseInt(dirModes.get(i)[1])); } catch (Exception ignored) { }
         }
-        progress(out, "extract", total, total);
+        progress(out, "Extracting", total, total);
     }
 
     // ---- post-install configuration ---------------------------------------
