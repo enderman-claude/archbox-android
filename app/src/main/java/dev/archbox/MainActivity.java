@@ -57,8 +57,9 @@ public class MainActivity extends Activity {
 
     private void go() {
         Crumbs.clear(this);
-        Crumbs.add(this, "MainActivity -> TerminalActivity");
-        startActivity(new Intent(this, TerminalActivity.class));
+        Crumbs.add(this, "MainActivity -> next screen");
+        boolean ready = new Bootstrap(getFilesDir()).installed();
+        startActivity(new Intent(this, ready ? TerminalActivity.class : OnboardingActivity.class));
         finish();
     }
 }

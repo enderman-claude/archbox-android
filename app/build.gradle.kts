@@ -36,5 +36,6 @@ dependencies {
     implementation("com.github.termux.termux-app:terminal-view:v0.118.0")
     implementation("com.github.termux.termux-app:terminal-emulator:v0.118.0")
     implementation("org.apache.commons:commons-compress:1.26.2")
+    implementation("org.tukaani:xz:1.9")   // .tar.xz support in commons-compress
     implementation("androidx.annotation:annotation:1.8.0")
 }
