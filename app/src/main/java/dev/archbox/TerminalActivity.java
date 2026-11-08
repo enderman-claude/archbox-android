@@ -4,11 +4,13 @@ import android.app.Activity;
 import android.content.Context;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.LinearLayout;
@@ -59,7 +61,17 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
                 new String[]{"sleep", "2147483647"}, env(), 2000, this));
     }
 
-    private String[] env() { return new String[]{"TERM=xterm-256color", "COLORTERM=truecolor"}; }
+    static final String VERSION = BuildConfig.GIT_SHA + " sdk" + BuildConfig.TARGET_SDK;
+
+    private String[] env() {
+        return new String[]{
+            "TERM=xterm-256color", "COLORTERM=truecolor",
+            "ARCHBOX_VERSION=" + VERSION,
+            // targetSdk >= 29 cannot execve() from app data: use the "userland" PRoot there
+            "ARCHBOX_USERLAND=" + (BuildConfig.TARGET_SDK >= 29 ? "1" : "0"),
+            "ARCHBOX_TMP=" + new java.io.File(getFilesDir(), "proot-tmp").getPath(),
+        };
+    }
 
     private void attach(TerminalSession s) {
         Crumbs.add(this, "attachSession");
@@ -102,8 +114,8 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
     private View extraKeys() {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
-        String[] labels = {"ESC", "CTRL", "TAB", "\u2190", "\u2193", "\u2191", "\u2192"};
-        String[] seqs = {"\u001b", null, "\t", "\u001b[D", "\u001b[B", "\u001b[A", "\u001b[C"};
+        String[] labels = {"ESC", "CTRL", "TAB", "\u2190", "\u2193", "\u2191", "\u2192", "\u2328"};
+        String[] seqs = {"\u001b", null, "\t", "\u001b[D", "\u001b[B", "\u001b[A", "\u001b[C", "KEYBOARD"};
         for (int i = 0; i < labels.length; i++) {
             Button btn = new Button(this);
             btn.setText(labels[i]);
@@ -112,7 +124,10 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
             btn.setMinWidth(0);
             btn.setMinimumWidth(0);
             final String seq = seqs[i];
-            if (seq == null) {
+            if ("KEYBOARD".equals(seq)) {
+                btn.setTextSize(16);
+                btn.setOnClickListener(v -> toggleKeyboard());
+            } else if (seq == null) {
                 ctrlButton = btn;
                 btn.setOnClickListener(v -> { ctrl = !ctrl; btn.setAlpha(ctrl ? 1f : 0.6f); });
                 btn.setAlpha(0.6f);
@@ -122,6 +137,29 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
             row.addView(btn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         }
         return row;
+    }
+
+    private boolean kbShown;
+
+    private boolean imeVisible() {
+        if (Build.VERSION.SDK_INT >= 30) {
+            WindowInsets wi = view.getRootWindowInsets();
+            if (wi != null) return wi.isVisible(WindowInsets.Type.ime());
+        }
+        return kbShown;
+    }
+
+    /** Show or hide the soft keyboard (the terminal view only opens it on tap). */
+    private void toggleKeyboard() {
+        InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (imeVisible()) {
+            imm.hideSoftInputFromWindow(view.getWindowToken(), 0);
+            kbShown = false;
+        } else {
+            view.requestFocus();
+            imm.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT);
+            kbShown = true;
+        }
     }
 
     @Override protected void onDestroy() {

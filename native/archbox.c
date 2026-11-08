@@ -174,6 +174,96 @@ static void diagnose(void) {
     fprintf(stderr, "archbox: this kernel/ROM does not let apps create the namespaces above.\n");
 }
 
+/* Can this app create the namespaces the container needs? Probed in a throwaway child so a
+   refusal (or a seccomp kill) leaves this process untouched. Returns 0 if ok, else the errno
+   (or -1 if the child was killed). */
+static int probe_namespaces(void) {
+    pid_t p = fork();
+    if (p < 0) return errno;
+    if (p == 0) {
+        if (unshare(CLONE_NEWUSER) < 0) _exit(errno);
+        if (unshare(CLONE_NEWNS) < 0) _exit(errno);
+        if (unshare(CLONE_NEWPID) < 0) _exit(errno);
+        _exit(0);
+    }
+    int st = 0;
+    while (waitpid(p, &st, 0) < 0 && errno == EINTR) {}
+    return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+}
+
+/* Fallback for kernels without user namespaces: PRoot (ptrace based) shipped as libproot*.so
+   next to this binary. Never returns on success. */
+static int run_proot(const char *root, char **cmd, const char *tty) {
+    char dir[512];
+    ssize_t n = readlink("/proc/self/exe", dir, sizeof dir - 1);
+    if (n <= 0) die("readlink /proc/self/exe");
+    dir[n] = 0;
+    char *slash = strrchr(dir, '/');
+    if (slash) *slash = 0;
+
+    /* targetSdk >= 29 forbids execve() of files in app data: "userland" PRoot maps ELF files itself */
+    const char *ul = getenv("ARCHBOX_USERLAND");
+    int userland = ul && ul[0] == '1';
+    char proot[640], loader[640], tmp[640];
+    snprintf(proot, sizeof proot, "%s/%s", dir, userland ? "libproot-userland.so" : "libproot.so");
+    snprintf(loader, sizeof loader, "%s/libproot-loader.so", dir);
+    const char *t = getenv("ARCHBOX_TMP");
+    if (t && *t) snprintf(tmp, sizeof tmp, "%s", t);
+    else snprintf(tmp, sizeof tmp, "%s/../proot-tmp", root);
+    mkdir(tmp, 0700);
+    if (access(proot, X_OK) < 0) die(proot);
+    if (access(loader, X_OK) < 0) die(loader);
+
+    const char *term = getenv("TERM");
+    char termbuf[64];
+    snprintf(termbuf, sizeof termbuf, "%s", term ? term : "xterm-256color");
+    const char *nosc = getenv("PROOT_NO_SECCOMP");
+    clearenv();                          /* no LD_PRELOAD / LD_LIBRARY_PATH from Android */
+    setenv("TERM", termbuf, 1);
+    setenv("HOME", "/root", 1);
+    setenv("USER", "root", 1);
+    setenv("LOGNAME", "root", 1);
+    setenv("SHELL", "/bin/bash", 1);
+    setenv("LANG", "C.UTF-8", 1);
+    setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/bin", 1);
+    setenv("GLIBC_TUNABLES", "glibc.pthread.rseq=0", 1);
+    setenv("PROOT_TMP_DIR", tmp, 1);
+    setenv("PROOT_LOADER", loader, 1);
+    if (nosc && *nosc) setenv("PROOT_NO_SECCOMP", nosc, 1);
+
+    char *argv[64];
+    int a = 0;
+    char console[160] = "", ttys0[160] = "";
+    argv[a++] = proot;
+    argv[a++] = "--kill-on-exit";
+    argv[a++] = "--link2symlink";
+    argv[a++] = "-0";
+    argv[a++] = "-r"; argv[a++] = (char *)root;
+    argv[a++] = "-b"; argv[a++] = "/dev";
+    argv[a++] = "-b"; argv[a++] = "/proc";
+    argv[a++] = "-b"; argv[a++] = "/sys";
+    argv[a++] = "-b"; argv[a++] = "/proc/self/fd:/dev/fd";
+    argv[a++] = "-b"; argv[a++] = "/proc/self/fd/0:/dev/stdin";
+    argv[a++] = "-b"; argv[a++] = "/proc/self/fd/1:/dev/stdout";
+    argv[a++] = "-b"; argv[a++] = "/proc/self/fd/2:/dev/stderr";
+    if (tty) {
+        snprintf(console, sizeof console, "%s:/dev/console", tty);
+        snprintf(ttys0, sizeof ttys0, "%s:/dev/ttyS0", tty);
+        argv[a++] = "-b"; argv[a++] = console;
+        argv[a++] = "-b"; argv[a++] = ttys0;
+    }
+    argv[a++] = "-w"; argv[a++] = "/root";
+    argv[a++] = LD_SO;
+    argv[a++] = "--library-path";
+    argv[a++] = "/usr/lib";
+    if (cmd[0]) { for (int i = 0; cmd[i] && a < 62; i++) argv[a++] = cmd[i]; }
+    else { argv[a++] = "/usr/bin/bash"; argv[a++] = "--login"; }
+    argv[a] = NULL;
+    execv(proot, argv);
+    die(proot);
+    return 127;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "usage: %s <rootfs> [cmd...]\n", argv[0]); return 2; }
     const char *root = argv[1];
@@ -185,6 +275,17 @@ int main(int argc, char **argv) {
     /* One namespace at a time so a failure names the culprit (EINVAL on a combined call only
        says "some flag is unsupported"). The user namespace goes first and is mapped before the
        others, which then run with full caps inside it. */
+    const char *ver = getenv("ARCHBOX_VERSION");
+    int force = getenv("ARCHBOX_FORCE_PROOT") != NULL;
+    int ns = force ? -2 : probe_namespaces();
+    if (ns != 0) {
+        if (ns == -2) fprintf(stderr, "archbox %s: ARCHBOX_FORCE_PROOT set, using proot\n", ver ? ver : "?");
+        else fprintf(stderr, "archbox %s: no namespaces (%s), falling back to proot\n", ver ? ver : "?",
+                     ns > 0 ? strerror(ns) : "blocked");
+        return run_proot(root, argv + 2, tty);
+    }
+    fprintf(stderr, "archbox %s: using namespaces\n", ver ? ver : "?");
+
     if (unshare(CLONE_NEWUSER) < 0) {
         int e = errno;
         fprintf(stderr, "archbox: unshare(user): %s\n", strerror(e));

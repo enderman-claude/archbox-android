@@ -58,7 +58,7 @@ final class Bootstrap {
     boolean installed() { return marker.exists(); }
 
     void run(Out out) throws Exception {
-        out.print("\u001b[1;36m== Archbox first boot ==\u001b[0m\n");
+        out.print("\u001b[1;36m== Archbox first boot (" + TerminalActivity.VERSION + ") ==\u001b[0m\n");
         out.print("Downloading Arch Linux ARM (aarch64)...\n");
         String md5 = download(out);
         String expected = fetchMd5();

@@ -11,6 +11,10 @@ android {
         val tsdk = (findProperty("tsdk") as String?)?.toInt() ?: 28
         targetSdk = tsdk
         resValue("string", "app_label", "Archbox SDK$tsdk")
+        // compiled in: shown in the first-boot banner and the launcher's startup line
+        val sha = (findProperty("gitsha") as String?) ?: "dev"
+        buildConfigField("String", "GIT_SHA", "\"${sha.take(7)}\"")
+        buildConfigField("int", "TARGET_SDK", "$tsdk")
         if (tsdk != 28) applicationIdSuffix = ".t$tsdk"
         versionCode = 1
         versionName = "0.1"
@@ -24,6 +28,7 @@ android {
         // The launcher is shipped as libarchbox.so and must exist as a real file.
         jniLibs { useLegacyPackaging = true }
     }
+    buildFeatures { buildConfig = true }
     lint { abortOnError = false; checkReleaseBuilds = false }
 }
 
