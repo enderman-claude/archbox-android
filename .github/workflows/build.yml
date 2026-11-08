@@ -51,27 +51,16 @@ jobs:
           done
           file $J/libproot*.so
 
-      # Tier 3 fallback (fakechroot): glibc objects, built for aarch64 with the distro cross
-      # compiler (NOT the NDK: they run under the Arch rootfs's glibc, not bionic). Shipped as
-      # lib*.so so Android extracts them. `faked` must be the TCP flavour: SysV IPC is blocked.
-      # Optional: if this step fails the APK still builds and the launcher reports the tier missing.
-      - name: Build fakechroot + fakeroot (glibc aarch64)
+      # Tier 3 fallback (fakechroot): glibc objects (NOT built with the NDK: they run under the Arch
+      # rootfs's glibc, not bionic). Shipped as lib*.so so Android extracts them. `faked` must be the
+      # TCP flavour: SysV IPC is blocked. tools/fetch_fakechroot.sh tries, per component, source build
+      # -> prebuilt Ubuntu arm64 .deb -> prebuilt Arch Linux ARM package, and reports the outcome as
+      # an annotation. The tier is optional, so this step never fails the build.
+      - name: Get fakechroot + fakeroot (glibc aarch64)
         continue-on-error: true
         run: |
-          set -e
-          sudo apt-get install -y -qq gcc-aarch64-linux-gnu autoconf automake libtool make
-          J=$PWD/app/src/main/jniLibs/arm64-v8a
-          # TODO: pin both tarballs by sha256 like PRoot above (not done yet: could not be fetched when written)
-          FC=2.20.1; FR=1.37.1.2
-          curl -fsSL -o fc.tgz "https://github.com/dex4er/fakechroot/releases/download/$FC/fakechroot-$FC.tar.gz"
-          curl -fsSL -o fr.tgz "https://deb.debian.org/debian/pool/main/f/fakeroot/fakeroot_$FR.orig.tar.gz"
-          mkdir fc fr && tar xzf fc.tgz -C fc --strip-components=1 && tar xzf fr.tgz -C fr --strip-components=1
-          export CC=aarch64-linux-gnu-gcc
-          (cd fc && ./configure --host=aarch64-linux-gnu && make -j"$(nproc)" && cp src/.libs/libfakechroot.so $J/libfakechroot.so)
-          (cd fr && ./configure --host=aarch64-linux-gnu --with-ipc=tcp && make -j"$(nproc)" \
-             && cp .libs/libfakeroot-tcp.so $J/libfakeroot.so 2>/dev/null || cp .libs/libfakeroot.so $J/libfakeroot.so
-             cp faked $J/libfaked.so)
-          file $J/libfakechroot.so $J/libfakeroot.so $J/libfaked.so
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu autoconf automake libtool make zstd xz-utils patch file
+          bash tools/fetch_fakechroot.sh app/src/main/jniLibs/arm64-v8a
 
       - uses: gradle/actions/setup-gradle@v4
         with:
