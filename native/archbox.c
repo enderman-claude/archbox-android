@@ -191,6 +191,135 @@ static int probe_namespaces(void) {
     return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
 }
 
+/* ---- ptrace self-test, run when proot fails: prints why syscall rewriting may not work ---- */
+#include <sys/ptrace.h>
+#include <sys/prctl.h>
+#include <sys/uio.h>
+#include <elf.h>
+#include <stdint.h>
+#include <time.h>
+
+#ifndef NT_PRSTATUS
+#define NT_PRSTATUS 1
+#endif
+#ifndef PTRACE_O_TRACESYSGOOD
+#define PTRACE_O_TRACESYSGOOD 1
+#endif
+#ifndef NT_ARM_SYSTEM_CALL
+#define NT_ARM_SYSTEM_CALL 0x404
+#endif
+#ifndef PR_GET_TAGGED_ADDR_CTRL
+#define PR_GET_TAGGED_ADDR_CTRL 56
+#endif
+
+static void status_line(const char *key) {
+    FILE *f = fopen("/proc/self/status", "r");
+    char line[256];
+    if (!f) return;
+    while (fgets(line, sizeof line, f)) {
+        if (!strncmp(line, key, strlen(key))) {
+            line[strcspn(line, "\n")] = 0;
+            fprintf(stderr, "  %s\n", line);
+        }
+    }
+    fclose(f);
+}
+
+static void ptrace_probe(void) {
+    fprintf(stderr, "archbox probe (why proot failed):\n");
+    status_line("Seccomp");
+    long tag = prctl(PR_GET_TAGGED_ADDR_CTRL, 0, 0, 0, 0);
+    fprintf(stderr, "  tagged_addr_ctrl=%ld\n", tag);
+
+    char *heap = malloc(32);
+    strcpy(heap, "probe");
+    volatile long stackv = 0x1234;
+    errno = 0;
+    pid_t c = fork();
+    if (c < 0) { fprintf(stderr, "  fork: %s\n", strerror(errno)); return; }
+    if (c == 0) {
+        if (ptrace(PTRACE_TRACEME, 0, 0, 0) < 0) _exit(100 + (errno & 63));
+        raise(SIGSTOP);
+        errno = 0;
+        long r = syscall(SYS_getppid);
+        _exit(r == 4242 ? 0 : (errno ? errno : 99));
+    }
+    int st = 0;
+    waitpid(c, &st, 0);
+    if (!WIFSTOPPED(st)) {
+        fprintf(stderr, "  child died before stop (%s %d)\n", WIFSIGNALED(st) ? "sig" : "exit",
+                WIFSIGNALED(st) ? WTERMSIG(st) : WEXITSTATUS(st));
+        return;
+    }
+    errno = 0;
+    long w = ptrace(PTRACE_PEEKDATA, c, heap, 0);
+    fprintf(stderr, "  peek heap %p: %s\n", (void *)heap, errno ? strerror(errno) : "ok");
+    errno = 0;
+    w = ptrace(PTRACE_PEEKDATA, c, (void *)&stackv, 0); (void)w;
+    fprintf(stderr, "  peek stack %p: %s\n", (void *)&stackv, errno ? strerror(errno) : "ok");
+
+    ptrace(PTRACE_SETOPTIONS, c, 0, (void *)(long)PTRACE_O_TRACESYSGOOD);
+    int inside = 0, got_nr = 0, void_rc = -2, res_rc = -2, void_errno = 0, res_errno = 0, sig = 0;
+    for (int guard = 0; guard < 200; guard++) {
+        if (ptrace(PTRACE_SYSCALL, c, 0, (void *)(long)sig) < 0) { fprintf(stderr, "  PTRACE_SYSCALL: %s\n", strerror(errno)); break; }
+        sig = 0;
+        waitpid(c, &st, 0);
+        if (WIFEXITED(st) || WIFSIGNALED(st)) break;
+        if (!WIFSTOPPED(st)) break;
+        int ss = WSTOPSIG(st);
+        if (ss != (SIGTRAP | 0x80)) { if (ss != SIGSTOP && ss != SIGTRAP) sig = ss; continue; }
+#if defined(__aarch64__)
+        uint64_t regs[34];
+        struct iovec iov = { regs, sizeof regs };
+        if (ptrace(PTRACE_GETREGSET, c, (void *)NT_PRSTATUS, &iov) < 0) { fprintf(stderr, "  GETREGSET: %s\n", strerror(errno)); break; }
+        long nr = (long)regs[8];
+#else
+        struct { unsigned long long r[27]; } regs; /* user_regs_struct */
+        struct iovec iov = { &regs, sizeof regs };
+        if (ptrace(PTRACE_GETREGSET, c, (void *)NT_PRSTATUS, &iov) < 0) { fprintf(stderr, "  GETREGSET: %s\n", strerror(errno)); break; }
+        long nr = (long)regs.r[15]; /* orig_rax */
+#endif
+        if (!inside) {
+            inside = 1;
+            if (nr == SYS_getppid && !got_nr) {
+                got_nr = 1;
+#if defined(__aarch64__)
+                int v = -1;
+                struct iovec vi = { &v, sizeof v };
+                errno = 0; void_rc = (int)ptrace(PTRACE_SETREGSET, c, (void *)NT_ARM_SYSTEM_CALL, &vi);
+#else
+                regs.r[15] = (unsigned long long)-1;
+                errno = 0; void_rc = (int)ptrace(PTRACE_SETREGSET, c, (void *)NT_PRSTATUS, &iov);
+#endif
+                void_errno = errno;
+            }
+        } else {
+            inside = 0;
+            if (got_nr && res_rc == -2) {
+#if defined(__aarch64__)
+                regs[0] = 4242;
+#else
+                regs.r[10] = 4242; /* rax */
+#endif
+                errno = 0; res_rc = (int)ptrace(PTRACE_SETREGSET, c, (void *)NT_PRSTATUS, &iov);
+                res_errno = errno;
+            }
+        }
+    }
+    ptrace(PTRACE_CONT, c, 0, 0);
+    waitpid(c, &st, 0);
+    fprintf(stderr, "  void syscall: %s%s\n", void_rc == 0 ? "ok" : "FAILED ", void_rc == 0 ? "" : strerror(void_errno));
+    fprintf(stderr, "  set result:   %s%s\n", res_rc == 0 ? "ok" : "FAILED ", res_rc == 0 ? "" : strerror(res_errno));
+    if (WIFEXITED(st)) {
+        int e = WEXITSTATUS(st);
+        fprintf(stderr, "  tracee saw:   %s", e == 0 ? "42 (rewrite works)" : e >= 100 && e < 164 ? "TRACEME failed" : strerror(e));
+        if (e >= 100 && e < 164) fprintf(stderr, " (%s)", strerror(e - 100));
+        fprintf(stderr, "\n");
+    } else if (WIFSIGNALED(st)) {
+        fprintf(stderr, "  tracee killed by signal %d\n", WTERMSIG(st));
+    }
+}
+
 /* Fallback for kernels without user namespaces: PRoot (ptrace based) shipped as libproot*.so
    next to this binary. Never returns on success. */
 static int run_proot(const char *root, char **cmd, const char *tty) {
@@ -262,9 +391,20 @@ static int run_proot(const char *root, char **cmd, const char *tty) {
     if (cmd[0]) { for (int i = 0; cmd[i] && a < 62; i++) argv[a++] = cmd[i]; }
     else { argv[a++] = "/usr/bin/bash"; argv[a++] = "--login"; }
     argv[a] = NULL;
-    execv(proot, argv);
-    die(proot);
-    return 127;
+    setenv("MEMTAG_OPTIONS", "off", 1);   /* no heap pointer tags: ptrace can't read tagged addresses */
+    time_t t0 = time(NULL);
+    child_pid = fork();
+    if (child_pid < 0) die("fork");
+    if (child_pid == 0) { execv(proot, argv); fprintf(stderr, "archbox: exec %s: %s\n", proot, strerror(errno)); _exit(127); }
+    signal(SIGTERM, forward); signal(SIGHUP, forward); signal(SIGINT, forward);
+    int status = 0;
+    while (waitpid(child_pid, &status, 0) < 0 && errno == EINTR) {}
+    int code = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+    if (code != 0 && time(NULL) - t0 < 8) {
+        fprintf(stderr, "\narchbox: proot exited with %d right after start\n", code);
+        ptrace_probe();
+    }
+    return code;
 }
 
 int main(int argc, char **argv) {
