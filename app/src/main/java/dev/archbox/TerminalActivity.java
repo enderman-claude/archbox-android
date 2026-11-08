@@ -4,13 +4,11 @@ import android.app.Activity;
 import android.content.Context;
 import android.graphics.Color;
 import android.graphics.Typeface;
-import android.os.Build;
 import android.os.Bundle;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.WindowInsets;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.LinearLayout;
@@ -141,23 +139,27 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
 
     private boolean kbShown;
 
+    /** Keyboard height heuristic that works on every API level (the window is adjustResize). */
     private boolean imeVisible() {
-        if (Build.VERSION.SDK_INT >= 30) {
-            WindowInsets wi = view.getRootWindowInsets();
-            if (wi != null) return wi.isVisible(WindowInsets.Type.ime());
-        }
-        return kbShown;
+        android.graphics.Rect r = new android.graphics.Rect();
+        View root = getWindow().getDecorView();
+        root.getWindowVisibleDisplayFrame(r);
+        int hidden = root.getRootView().getHeight() - r.height();
+        return hidden > root.getRootView().getHeight() * 0.25f;
     }
 
     /** Show or hide the soft keyboard (the terminal view only opens it on tap). */
     private void toggleKeyboard() {
         InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
-        if (imeVisible()) {
+        boolean visible = imeVisible();
+        Crumbs.add(this, "keyboard button: visible=" + visible);
+        if (visible) {
             imm.hideSoftInputFromWindow(view.getWindowToken(), 0);
             kbShown = false;
         } else {
             view.requestFocus();
-            imm.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT);
+            boolean ok = imm.showSoftInput(view, 0);
+            if (!ok) imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0);
             kbShown = true;
         }
     }

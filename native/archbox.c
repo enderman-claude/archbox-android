@@ -217,7 +217,10 @@ static int run_proot(const char *root, char **cmd, const char *tty) {
     const char *term = getenv("TERM");
     char termbuf[64];
     snprintf(termbuf, sizeof termbuf, "%s", term ? term : "xterm-256color");
-    const char *nosc = getenv("PROOT_NO_SECCOMP");
+    /* PRoot's seccomp acceleration makes syscalls fail with ENOSYS on some Android kernels
+       ("execve: Function not implemented"), so it is off unless ARCHBOX_PROOT_SECCOMP=1. */
+    const char *sc = getenv("ARCHBOX_PROOT_SECCOMP");
+    int use_seccomp = sc && sc[0] == '1';
     clearenv();                          /* no LD_PRELOAD / LD_LIBRARY_PATH from Android */
     setenv("TERM", termbuf, 1);
     setenv("HOME", "/root", 1);
@@ -229,7 +232,7 @@ static int run_proot(const char *root, char **cmd, const char *tty) {
     setenv("GLIBC_TUNABLES", "glibc.pthread.rseq=0", 1);
     setenv("PROOT_TMP_DIR", tmp, 1);
     setenv("PROOT_LOADER", loader, 1);
-    if (nosc && *nosc) setenv("PROOT_NO_SECCOMP", nosc, 1);
+    if (!use_seccomp) setenv("PROOT_NO_SECCOMP", "1", 1);
 
     char *argv[64];
     int a = 0;
