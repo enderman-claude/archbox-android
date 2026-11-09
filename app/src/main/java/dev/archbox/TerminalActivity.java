@@ -254,9 +254,10 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
         return col;
     }
 
+    /** Goes through the terminal's own input path, so an armed CTRL/ALT applies (Ctrl+/ = ^_, Alt+- = ESC -)
+     *  and is then released by onCodePoint(); writing to the session directly bypassed both. */
     private void typeChar(String c) {
-        if (session != null && session.isRunning()) session.write(c);
-        clearSticky();
+        view.inputCodePoint(c.codePointAt(0), false, false);
     }
 
     private boolean kbShown;
