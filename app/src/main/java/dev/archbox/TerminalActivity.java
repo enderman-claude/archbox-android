@@ -191,8 +191,21 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
 
     private void clearSticky() {
         ctrl = false; alt = false;
-        if (ctrlButton != null) ctrlButton.setAlpha(0.6f);
-        if (altButton != null) altButton.setAlpha(0.6f);
+        paintModifier(ctrlButton, false);
+        paintModifier(altButton, false);
+    }
+
+    /** Armed modifier = solid green with black text; idle = the normal button look. */
+    private void paintModifier(Button b, boolean armed) {
+        if (b == null) return;
+        if (armed) {
+            if (b.getTag() == null) b.setTag(b.getBackground());   // remember the idle look once
+            b.setBackgroundColor(0xFF4CAF50);
+            b.setTextColor(Color.BLACK);
+        } else if (b.getTag() instanceof android.graphics.drawable.Drawable) {
+            b.setBackground((android.graphics.drawable.Drawable) b.getTag());
+            b.setTextColor(Color.WHITE);
+        }
     }
 
     private Button key(String label, Runnable action) {
@@ -215,10 +228,8 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
     }
 
     private View extraKeys() {
-        ctrlButton = key("CTRL", () -> { ctrl = !ctrl; ctrlButton.setAlpha(ctrl ? 1f : 0.6f); });
-        altButton = key("ALT", () -> { alt = !alt; altButton.setAlpha(alt ? 1f : 0.6f); });
-        ctrlButton.setAlpha(0.6f);
-        altButton.setAlpha(0.6f);
+        ctrlButton = key("CTRL", () -> { ctrl = !ctrl; paintModifier(ctrlButton, ctrl); view.requestFocus(); });
+        altButton = key("ALT", () -> { alt = !alt; paintModifier(altButton, alt); view.requestFocus(); });
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
         col.addView(keyRow(
@@ -343,7 +354,9 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
     @Override public boolean readShiftKey() { return false; }
     @Override public boolean readFnKey() { return false; }
     @Override public boolean onCodePoint(int codePoint, boolean ctrlDown, TerminalSession s) {
-        if (ctrl || alt) clearSticky();
+        // TerminalView reads readControlKey()/readAltKey() right before and after this callback, so the
+        // one-shot modifiers are released after the current input has been fully processed.
+        if (ctrl || alt) view.post(this::clearSticky);
         return false;
     }
     @Override public void onEmulatorSet() { }
