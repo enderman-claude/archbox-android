@@ -63,6 +63,10 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
 
         Crumbs.add(this, "creating TerminalView");
         view = new TerminalView(this, null);
+        // Termux declares these in its layout XML; the class does not set them. Without them requestFocus()
+        // does nothing in touch mode, so the soft keyboard has no input connection to the terminal.
+        view.setFocusable(true);
+        view.setFocusableInTouchMode(true);
         view.setTerminalViewClient(this);
         applyTextSize();
         view.setKeepScreenOn(true);
