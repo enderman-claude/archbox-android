@@ -141,7 +141,7 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
 
     private void showMenu() {
         String[] items = {"Restart session", "Backend: " + (tierOverride() == null ? "auto" : tierOverride()) + "...",
-                "Text larger", "Text smaller", "Reinstall rootfs...", "Send Ctrl+C", "Key debug: " + (keyDebug ? "on" : "off")};
+                "Text larger", "Text smaller", "Reinstall rootfs...", "Send Ctrl+C", "Key debug: " + (keyDebug ? "on" : "off"), "Diagnostics (processes)"};
         new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
                 .setTitle("Archbox " + VERSION)
                 .setItems(items, (d, which) -> {
@@ -152,9 +152,52 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
                         case 3: changeTextSize(-2); break;
                         case 4: confirmReinstall(); break;
                         case 5: if (session != null) session.write("\u0003"); break;   // raw ^C, bypasses the CTRL button
+                        case 7: showDiagnostics(); break;
                         case 6: keyDebug = !keyDebug; debug("key debug " + (keyDebug ? "on: type something" : "off")); break;
                     }
                 }).show();
+    }
+
+    /** Lists this app's processes (the container shows up here too) with state and terminal process groups:
+     *  state T = stopped (e.g. by SIGTTIN/SIGTTOU), pgrp != tpgid = not the terminal's foreground group. */
+    private void showDiagnostics() {
+        StringBuilder sb = new StringBuilder("pid ppid pgrp sess tpgid st comm  args\n");
+        int myUid = android.os.Process.myUid();
+        File[] fs = new File("/proc").listFiles();
+        if (fs == null) fs = new File[0];
+        java.util.Arrays.sort(fs, (a, b) -> a.getName().length() != b.getName().length()
+                ? a.getName().length() - b.getName().length() : a.getName().compareTo(b.getName()));
+        for (File f : fs) {
+            if (!f.getName().matches("\\d+")) continue;
+            try {
+                if (android.system.Os.stat(f.getPath()).st_uid != myUid) continue;
+                String stat = new String(java.nio.file.Files.readAllBytes(new File(f, "stat").toPath()), StandardCharsets.UTF_8);
+                int lp = stat.indexOf('('), rp = stat.lastIndexOf(')');
+                String[] t = stat.substring(rp + 2).split(" ");   // state ppid pgrp session tty_nr tpgid
+                String cmd = "";
+                try { cmd = new String(java.nio.file.Files.readAllBytes(new File(f, "cmdline").toPath()), StandardCharsets.UTF_8).replace('\0', ' ').trim(); }
+                catch (Exception ignored) { }
+                if (cmd.length() > 90) cmd = cmd.substring(0, 90) + "...";
+                sb.append(f.getName()).append(f.getName().equals(String.valueOf(android.os.Process.myPid())) ? "*" : "").append(' ')
+                  .append(t[1]).append(' ').append(t[2]).append(' ').append(t[3]).append(' ').append(t[5]).append(' ')
+                  .append(t[0]).append(' ').append(stat, lp + 1, rp).append("  ").append(cmd).append('\n');
+            } catch (Exception ignored) { }
+        }
+        final String text = sb.toString();
+        android.widget.TextView tv = new android.widget.TextView(this);
+        tv.setText(text);
+        tv.setTypeface(android.graphics.Typeface.MONOSPACE);
+        tv.setTextSize(10);
+        tv.setTextIsSelectable(true);
+        tv.setPadding(24, 16, 24, 16);
+        android.widget.ScrollView sv = new android.widget.ScrollView(this);
+        sv.addView(tv);
+        new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("Processes (* = this app)")
+                .setView(sv)
+                .setPositiveButton("Copy", (d, w) -> onCopyTextToClipboard(session, text))
+                .setNegativeButton("Close", null)
+                .show();
     }
 
     private void chooseBackend() {
