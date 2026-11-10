@@ -126,7 +126,7 @@ static int run_init(const char *root, char **cmd, const char *tty) {
         setenv("GLIBC_TUNABLES", "glibc.pthread.rseq=0", 1);
         if (chdir("/root") < 0) chdir("/");
 
-        char *def[] = {"ld-linux-aarch64.so.1", "--library-path", "/usr/lib", "/usr/bin/bash", "--login", NULL};
+        char *def[] = {"ld-linux-aarch64.so.1", "--library-path", "/usr/lib", "/usr/bin/bash", "--login", "-i", NULL};
         if (cmd[0]) {
             int n = 0; while (cmd[n]) n++;
             char **argv = calloc(n + 4, sizeof(char *));
@@ -411,7 +411,7 @@ static int run_proot(const char *root, char **cmd, const char *tty, int probe) {
     argv[a++] = "--library-path";
     argv[a++] = "/usr/lib";
     if (cmd[0]) { for (int i = 0; cmd[i] && a < 62; i++) argv[a++] = cmd[i]; }
-    else { argv[a++] = "/usr/bin/bash"; argv[a++] = "--login"; }
+    else { argv[a++] = "/usr/bin/bash"; argv[a++] = "--login"; argv[a++] = "-i"; }
     argv[a] = NULL;
     setenv("MEMTAG_OPTIONS", "off", 1);   /* no heap pointer tags: ptrace can't read tagged addresses */
     time_t t0 = time(NULL);
@@ -563,7 +563,7 @@ static int run_fakechroot(const char *root, char **cmd, const char *tty) {
         for (int i = 1; cmd[i] && a < 62; i++) argv[a++] = cmd[i];
     } else {
         snprintf(prog, sizeof prog, "%s/usr/bin/bash", root);
-        argv[a++] = prog; argv[a++] = "--login";
+        argv[a++] = prog; argv[a++] = "--login"; argv[a++] = "-i";
     }
     argv[a] = NULL;
 

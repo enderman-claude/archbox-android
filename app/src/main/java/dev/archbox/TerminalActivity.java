@@ -111,12 +111,21 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
         view.requestFocus();
     }
 
-    private void startContainer() {
+    private void startContainer(String... cmd) {
         Crumbs.add(this, "startContainer");
         bootstrap.refreshProfile();
         String launcher = getApplicationInfo().nativeLibraryDir + "/libarchbox.so";
-        attach(new TerminalSession(launcher, getFilesDir().getPath(),
-                new String[]{"archbox", bootstrap.root().getPath()}, env(), 4000, this));
+        String[] args = new String[2 + cmd.length];
+        args[0] = "archbox"; args[1] = bootstrap.root().getPath();
+        System.arraycopy(cmd, 0, args, 2, cmd.length);
+        attach(new TerminalSession(launcher, getFilesDir().getPath(), args, env(), 4000, this));
+    }
+
+    /** Escape hatch: a shell that skips /etc/profile, profile.d and ~/.bashrc, so a broken login script can never lock you out. */
+    private void recoveryShell() {
+        TerminalSession old = session;
+        startContainer("/usr/bin/bash", "--noprofile", "--norc", "-i");
+        if (old != null) old.finishIfRunning();
     }
 
     private void restartContainer() {
@@ -141,7 +150,7 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
 
     private void showMenu() {
         String[] items = {"Restart session", "Backend: " + (tierOverride() == null ? "auto" : tierOverride()) + "...",
-                "Text larger", "Text smaller", "Reinstall rootfs...", "Send Ctrl+C", "Key debug: " + (keyDebug ? "on" : "off"), "Diagnostics (processes)"};
+                "Text larger", "Text smaller", "Reinstall rootfs...", "Send Ctrl+C", "Key debug: " + (keyDebug ? "on" : "off"), "Diagnostics (processes)", "Recovery shell (no login scripts)"};
         new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
                 .setTitle("Archbox " + VERSION)
                 .setItems(items, (d, which) -> {
@@ -153,6 +162,7 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
                         case 4: confirmReinstall(); break;
                         case 5: if (session != null) session.write("\u0003"); break;   // raw ^C, bypasses the CTRL button
                         case 7: showDiagnostics(); break;
+                        case 8: recoveryShell(); break;
                         case 6: keyDebug = !keyDebug; debug("key debug " + (keyDebug ? "on: type something" : "off")); break;
                     }
                 }).show();
@@ -178,9 +188,13 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
                 try { cmd = new String(java.nio.file.Files.readAllBytes(new File(f, "cmdline").toPath()), StandardCharsets.UTF_8).replace('\0', ' ').trim(); }
                 catch (Exception ignored) { }
                 if (cmd.length() > 90) cmd = cmd.substring(0, 90) + "...";
+                String wch = "", sc = "", fd0 = "";
+                try { wch = new String(java.nio.file.Files.readAllBytes(new File(f, "wchan").toPath()), StandardCharsets.UTF_8).trim(); } catch (Exception ignored) { }
+                try { sc = new String(java.nio.file.Files.readAllBytes(new File(f, "syscall").toPath()), StandardCharsets.UTF_8).trim().split(" ")[0]; } catch (Exception ignored) { }
+                try { fd0 = android.system.Os.readlink(new File(f, "fd/0").getPath()); } catch (Exception ignored) { }
                 sb.append(f.getName()).append(f.getName().equals(String.valueOf(android.os.Process.myPid())) ? "*" : "").append(' ')
                   .append(t[1]).append(' ').append(t[2]).append(' ').append(t[3]).append(' ').append(t[5]).append(' ')
-                  .append(t[0]).append(' ').append(stat, lp + 1, rp).append("  ").append(cmd).append('\n');
+                  .append(t[0]).append(' ').append(stat, lp + 1, rp).append("  ").append(cmd).append("\n   wchan=").append(wch).append(" syscall=").append(sc).append(" fd0=").append(fd0).append('\n');
                 if (stat.substring(lp + 1, rp).startsWith("ld-linux")) {      // the container's processes: what are they blocked on?
                     sb.append("    syscall: ").append(slurp(new File(f, "syscall"), 80).trim());
                     sb.append("  wchan: ").append(slurp(new File(f, "wchan"), 40).trim());
