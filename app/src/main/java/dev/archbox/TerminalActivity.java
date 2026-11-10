@@ -39,6 +39,8 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
     private TerminalSession session;
     private Bootstrap bootstrap;
     private boolean ctrl, alt, volDown;
+    private boolean keyDebug;                       // menu: show what the terminal receives from the keyboard
+    private android.widget.Toast debugToast;
     private Button ctrlButton, altButton;
     private SharedPreferences prefs;
     private int textSp;
@@ -135,7 +137,7 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
 
     private void showMenu() {
         String[] items = {"Restart session", "Backend: " + (tierOverride() == null ? "auto" : tierOverride()) + "...",
-                "Text larger", "Text smaller", "Reinstall rootfs...", "Send Ctrl+C"};
+                "Text larger", "Text smaller", "Reinstall rootfs...", "Send Ctrl+C", "Key debug: " + (keyDebug ? "on" : "off")};
         new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
                 .setTitle("Archbox " + VERSION)
                 .setItems(items, (d, which) -> {
@@ -146,6 +148,7 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
                         case 3: changeTextSize(-2); break;
                         case 4: confirmReinstall(); break;
                         case 5: if (session != null) session.write("\u0003"); break;   // raw ^C, bypasses the CTRL button
+                        case 6: keyDebug = !keyDebug; debug("key debug " + (keyDebug ? "on: type something" : "off")); break;
                     }
                 }).show();
     }
@@ -343,6 +346,7 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
     @Override public boolean isTerminalViewSelected() { return true; }
     @Override public void copyModeChanged(boolean copyMode) { }
     @Override public boolean onKeyDown(int keyCode, KeyEvent e, TerminalSession s) {
+        if (keyDebug) debug("keyDown " + KeyEvent.keyCodeToString(keyCode) + "  CTRL armed=" + ctrl + "  meta=" + e.getMetaState());
         if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) { volDown = true; return true; }   // Vol-down = Ctrl (like Termux)
         if (keyCode == KeyEvent.KEYCODE_ENTER && s != null && !s.isRunning()) { restartContainer(); return true; }
         return false;
@@ -356,7 +360,15 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
     @Override public boolean readAltKey() { return alt; }
     @Override public boolean readShiftKey() { return false; }
     @Override public boolean readFnKey() { return false; }
+    private void debug(String m) {
+        if (debugToast != null) debugToast.cancel();
+        debugToast = android.widget.Toast.makeText(this, m, android.widget.Toast.LENGTH_SHORT);
+        debugToast.show();
+    }
+
     @Override public boolean onCodePoint(int codePoint, boolean ctrlDown, TerminalSession s) {
+        if (keyDebug) debug(String.format("text U+%04X '%s'  CTRL armed=%b  alt=%b  (fromEvent ctrl=%b)",
+                codePoint, codePoint < 32 ? "^" : new String(Character.toChars(codePoint)), ctrl, alt, ctrlDown));
         // TerminalView reads readControlKey()/readAltKey() right before and after this callback, so the
         // one-shot modifiers are released after the current input has been fully processed.
         if (ctrl || alt) view.post(this::clearSticky);
