@@ -107,6 +107,7 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
 
     private void startContainer() {
         Crumbs.add(this, "startContainer");
+        bootstrap.refreshProfile();
         String launcher = getApplicationInfo().nativeLibraryDir + "/libarchbox.so";
         attach(new TerminalSession(launcher, getFilesDir().getPath(),
                 new String[]{"archbox", bootstrap.root().getPath()}, env(), 4000, this));
@@ -134,7 +135,7 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
 
     private void showMenu() {
         String[] items = {"Restart session", "Backend: " + (tierOverride() == null ? "auto" : tierOverride()) + "...",
-                "Text larger", "Text smaller", "Reinstall rootfs..."};
+                "Text larger", "Text smaller", "Reinstall rootfs...", "Send Ctrl+C"};
         new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
                 .setTitle("Archbox " + VERSION)
                 .setItems(items, (d, which) -> {
@@ -144,6 +145,7 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
                         case 2: changeTextSize(+2); break;
                         case 3: changeTextSize(-2); break;
                         case 4: confirmReinstall(); break;
+                        case 5: if (session != null) session.write("\u0003"); break;   // raw ^C, bypasses the CTRL button
                     }
                 }).show();
     }

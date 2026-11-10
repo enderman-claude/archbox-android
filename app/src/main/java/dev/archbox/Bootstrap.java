@@ -455,16 +455,26 @@ final class Bootstrap {
             write(pc, s);
         }
 
-        File pd = new File(root, "etc/profile.d");
-        pd.mkdirs();
-        File sh = new File(pd, "archbox.sh");
-        write(sh, "#!/bin/sh\n"
-                + "echo \"libc: $(ldd --version 2>&1 | head -1)\"\n"
-                + "if [ ! -e /var/lib/pacman/.archbox-keyring ]; then\n"
-                + "  echo 'First login: initialising the pacman keyring...'\n"
-                + "  pacman-key --init && pacman-key --populate archlinuxarm && touch /var/lib/pacman/.archbox-keyring\n"
-                + "fi\n");
-        Os.chmod(sh.getPath(), 0644);
+        refreshProfile();
+    }
+
+    /** (Re)writes /etc/profile.d/archbox.sh from the bundled resource; called on every launch so
+     *  fixes to the first-login logic reach rootfs installs that already exist. */
+    void refreshProfile() {
+        try {
+            File pd = new File(root, "etc/profile.d");
+            if (!new File(root, "etc").isDirectory()) return;
+            pd.mkdirs();
+            File sh = new File(pd, "archbox.sh");
+            try (InputStream in = Bootstrap.class.getResourceAsStream("/archbox-profile.sh")) {
+                if (in == null) return;
+                ByteArrayOutputStream b = new ByteArrayOutputStream();
+                byte[] buf = new byte[4096]; int n;
+                while ((n = in.read(buf)) > 0) b.write(buf, 0, n);
+                write(sh, b.toString("UTF-8"));
+            }
+            Os.chmod(sh.getPath(), 0644);
+        } catch (Exception ignored) { }
     }
 
     private static void write(File f, String s) throws IOException {
