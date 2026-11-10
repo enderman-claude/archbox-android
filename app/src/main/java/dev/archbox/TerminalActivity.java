@@ -181,8 +181,24 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
                 sb.append(f.getName()).append(f.getName().equals(String.valueOf(android.os.Process.myPid())) ? "*" : "").append(' ')
                   .append(t[1]).append(' ').append(t[2]).append(' ').append(t[3]).append(' ').append(t[5]).append(' ')
                   .append(t[0]).append(' ').append(stat, lp + 1, rp).append("  ").append(cmd).append('\n');
+                if (stat.substring(lp + 1, rp).startsWith("ld-linux")) {      // the container's processes: what are they blocked on?
+                    sb.append("    syscall: ").append(slurp(new File(f, "syscall"), 80).trim());
+                    sb.append("  wchan: ").append(slurp(new File(f, "wchan"), 40).trim());
+                    try { sb.append("  fd0->").append(android.system.Os.readlink(f.getPath() + "/fd/0")); } catch (Exception e) { sb.append("  fd0: ?"); }
+                    sb.append('\n');
+                }
             } catch (Exception ignored) { }
         }
+        sb.append("\n-- login files in the rootfs --\n");
+        try {
+            File pd = new File(bootstrap.root(), "etc/profile.d");
+            String[] names = pd.list();
+            if (names != null) { java.util.Arrays.sort(names); sb.append("profile.d: ").append(String.join(" ", names)).append('\n'); }
+            for (String rel : new String[]{"root/.bash_profile", "root/.bashrc", "etc/bash.bashrc"}) {
+                File f = new File(bootstrap.root(), rel);
+                sb.append(rel).append(f.exists() ? ": " + slurp(f, 400).replace('\n', '|') : ": (absent)").append('\n');
+            }
+        } catch (Exception e) { sb.append("(" + e + ")\n"); }
         final String text = sb.toString();
         android.widget.TextView tv = new android.widget.TextView(this);
         tv.setText(text);
@@ -198,6 +214,13 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
                 .setPositiveButton("Copy", (d, w) -> onCopyTextToClipboard(session, text))
                 .setNegativeButton("Close", null)
                 .show();
+    }
+
+    private static String slurp(File f, int max) {
+        try (java.io.InputStream in = new java.io.FileInputStream(f)) {
+            byte[] b = new byte[max]; int n = in.read(b);
+            return n > 0 ? new String(b, 0, n, StandardCharsets.UTF_8) : "";
+        } catch (Exception e) { return "(" + e.getClass().getSimpleName() + ")"; }
     }
 
     private void chooseBackend() {
