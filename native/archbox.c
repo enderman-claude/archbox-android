@@ -509,6 +509,100 @@ static int start_faked(const char *dir, const char *root, const char *ld, const 
 #include <sys/syscall.h>
 struct sc_probe { const char *name; long nr; long a, b, c, d; };
 #define SCP(name, a1, a2, a3, a4) { #name, SYS_##name, (long)(a1), (long)(a2), (long)(a3), (long)(a4) }
+
+/* ---- debug layer (beta 9): process, file, environment and live-syscall tracing ----------- */
+#include <dirent.h>
+#include <pthread.h>
+
+static void dbg_file(const char *label, const char *path) {
+    struct stat st;
+    if (stat(path, &st) < 0) {
+        fprintf(stderr, "archbox debug [%s] %s: stat failed: %s\n", label, path, strerror(errno));
+        return;
+    }
+    unsigned char hdr[4] = {0};
+    int fd = open(path, O_RDONLY);
+    if (fd >= 0) { if (read(fd, hdr, 4) < 0) {} close(fd); }
+    fprintf(stderr,
+            "archbox debug [%s] %s: size=%lld mode=%o uid=%d gid=%d header=%02x%02x%02x%02x x=%d r=%d\n",
+            label, path, (long long)st.st_size, (unsigned)(st.st_mode & 07777), (int)st.st_uid,
+            (int)st.st_gid, hdr[0], hdr[1], hdr[2], hdr[3], access(path, X_OK) == 0, access(path, R_OK) == 0);
+}
+
+static void dbg_proc(const char *who, const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) { fprintf(stderr, "archbox debug [%s] %s: %s\n", who, path, strerror(errno)); return; }
+    char line[256];
+    while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\n")] = 0;
+        fprintf(stderr, "archbox debug [%s] %s\n", who, line);
+    }
+    fclose(f);
+}
+
+static void dbg_startup(const char *who) {
+    struct utsname u;
+    if (uname(&u) == 0)
+        fprintf(stderr, "archbox debug [%s] uname %s %s %s %s\n", who, u.sysname, u.release, u.version, u.machine);
+    dbg_proc(who, "/proc/self/status");
+    dbg_proc(who, "/proc/self/limits");
+    dbg_proc(who, "/proc/self/attr/current");
+    fprintf(stderr, "archbox debug [%s] pid=%d ppid=%d pgid=%d sid=%d\n", who,
+            (int)getpid(), (int)getppid(), (int)getpgrp(), (int)getsid(0));
+    for (int fd = 0; fd < 16; fd++) {
+        char lnk[64], tgt[256];
+        snprintf(lnk, sizeof lnk, "/proc/self/fd/%d", fd);
+        ssize_t n = readlink(lnk, tgt, sizeof tgt - 1);
+        if (n > 0) { tgt[n] = 0; fprintf(stderr, "archbox debug [%s] fd %d -> %s\n", who, fd, tgt); }
+    }
+}
+
+static void dbg_env(const char *who) {
+    extern char **environ;
+    for (char **e = environ; e && *e; e++) {
+        char tmp[200];
+        snprintf(tmp, sizeof tmp, "%s", *e);
+        fprintf(stderr, "archbox debug [%s] env %s\n", who, tmp);
+    }
+}
+
+/* Samples /proc/<pid>/syscall while the guest runs and counts the syscall numbers it sees. */
+#define MON_MAX 512
+static pid_t mon_pid;
+static volatile int mon_run;
+static long mon_count[MON_MAX];
+static long mon_running, mon_none;
+
+static void *mon_thread(void *arg) {
+    (void)arg;
+    char path[64];
+    snprintf(path, sizeof path, "/proc/%d/syscall", (int)mon_pid);
+    while (mon_run) {
+        int fd = open(path, O_RDONLY);
+        if (fd >= 0) {
+            char buf[256] = {0};
+            ssize_t n = read(fd, buf, sizeof buf - 1);
+            close(fd);
+            if (n > 0) {
+                if (!strncmp(buf, "running", 7)) mon_running++;
+                else {
+                    long nr = strtol(buf, NULL, 10);
+                    if (nr >= 0 && nr < MON_MAX) mon_count[nr]++;
+                    else mon_none++;
+                }
+            }
+        }
+        usleep(300);
+    }
+    return NULL;
+}
+
+static void mon_report(void) {
+    fprintf(stderr, "archbox debug [guest syscalls] samples: running=%ld none=%ld\n", mon_running, mon_none);
+    for (int i = 0; i < MON_MAX; i++)
+        if (mon_count[i]) fprintf(stderr, "archbox debug [guest syscalls] nr=%d seen=%ld\n", i, mon_count[i]);
+}
+
 static void scan_syscalls(void) {
     struct sc_probe list[] = {
         SCP(openat, -100, 0, 0, 0),          /* AT_FDCWD, NULL path: EFAULT */
@@ -533,6 +627,31 @@ static void scan_syscalls(void) {
         SCP(rseq, 0, 0, 0, 0),               /* NULL: EFAULT */
         SCP(membarrier, -1, 0, 0, 0),        /* bad cmd: EINVAL */
         SCP(userfaultfd, -1, 0, 0, 0),       /* bad flags: EINVAL */
+        SCP(futex, 0, 0, 0, 0),              /* NULL uaddr: EFAULT */
+        SCP(getrandom, 0, 0, 0, 0),          /* NULL buf: EFAULT */
+        SCP(mprotect, 0, 0, 0, 0),           /* zero length: no-op */
+        SCP(madvise, 0, 0, 0, 0),            /* zero length: no-op */
+        SCP(prctl, -1, 0, 0, 0),             /* bad option: EINVAL */
+        SCP(sigaltstack, 0, 0, 0, 0),        /* query only */
+        SCP(rt_sigprocmask, -1, 0, 0, 0),    /* bad how: EINVAL */
+        SCP(close_range, -1, -1, 0, 0),      /* range -1..-1: EINVAL */
+        SCP(statx, -100, 0, 0, 0),           /* NULL path: EFAULT */
+        SCP(readlinkat, -100, 0, 0, 0),      /* NULL path: EFAULT */
+        SCP(newfstatat, -100, 0, 0, 0),      /* NULL path: EFAULT */
+        SCP(getdents64, -1, 0, 0, 0),        /* bad fd: EBADF */
+        SCP(pipe2, 0, 0, 0, 0),              /* NULL: EFAULT */
+        SCP(dup3, -1, -1, 0, 0),             /* bad fd: EBADF */
+        SCP(epoll_create1, -1, 0, 0, 0),     /* bad flags: EINVAL */
+        SCP(memfd_create, 0, 0, 0, 0),       /* NULL name: EFAULT */
+        SCP(sched_getaffinity, -1, 0, 0, 0), /* bad pid: ESRCH */
+        SCP(prlimit64, -1, -1, 0, 0),        /* bad resource: EINVAL */
+        SCP(umask, 0, 0, 0, 0),              /* query only */
+        SCP(uname, 0, 0, 0, 0),              /* NULL: EFAULT */
+        SCP(clock_gettime, -1, 0, 0, 0),     /* bad clock: EINVAL */
+        SCP(ioctl, -1, 0, 0, 0),             /* bad fd: EBADF */
+        SCP(sched_yield, 0, 0, 0, 0),        /* harmless */
+        SCP(eventfd2, -1, 0, 0, 0),          /* bad flags: EINVAL */
+        SCP(setns, -1, 0, 0, 0),             /* bad fd: EBADF */
         SCP(sched_setattr, -1, 0, 0, 0),     /* bad pid: EINVAL */
         SCP(kcmp, -1, -1, -1, 0),            /* bad pids: ESRCH */
         SCP(process_vm_readv, -1, 0, 0, 0),  /* bad pid: ESRCH */
@@ -691,6 +810,9 @@ static int run_shim(const char *root, char **cmd, const char *tty) {
     snprintf(libpath, sizeof libpath, "%s:%s", dir, rootlib);
     fprintf(stderr, "archbox debug [shim] preloading %s\n", cred);
     scan_syscalls();   /* same blocked-call table as the fakechroot tier, to compare */
+    dbg_file("shim", ld);
+    dbg_file("shim", cred);
+    dbg_file("shim", rootlib);
 
     const char *term = getenv("TERM");
     char termbuf[64];
@@ -706,6 +828,7 @@ static int run_shim(const char *root, char **cmd, const char *tty) {
     setenv("GLIBC_TUNABLES", "glibc.pthread.rseq=0", 1);
     setenv("LD_LIBRARY_PATH", libpath, 1);
     setenv("LD_PRELOAD", cred, 1);
+    setenv("LD_DEBUG", "libs,files,bindings,statistics", 1);   /* loader trace for the shim guest */
 
     char prog[700], *argv[64];
     int a = 0;
@@ -732,14 +855,21 @@ static int run_shim(const char *root, char **cmd, const char *tty) {
         _exit(127);
     }
     signal(SIGTERM, forward_fc); signal(SIGHUP, forward_fc); signal(SIGINT, forward_fc);
+    mon_pid = child_pid; mon_run = 1;
+    pthread_t mt; int have_mon = pthread_create(&mt, NULL, mon_thread, NULL) == 0;
     int status = 0;
     while (waitpid(child_pid, &status, 0) < 0 && errno == EINTR) {}
+    if (have_mon) { mon_run = 0; pthread_join(mt, NULL); }
+    mon_report();
+    dbg_proc("shim parent", "/proc/self/status");
     if (WIFSIGNALED(status))
         fprintf(stderr, "archbox: shim guest killed by signal %d\n", WTERMSIG(status));
     return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
 }
 
 int main(int argc, char **argv) {
+    dbg_startup("launcher");
+    dbg_env("launcher");
     if (argc < 2) { fprintf(stderr, "usage: %s <rootfs> [cmd...]\n", argv[0]); return 2; }
     const char *root = argv[1];
     uid_t uid = getuid(); gid_t gid = getgid();
