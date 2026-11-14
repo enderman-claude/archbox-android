@@ -69,7 +69,7 @@ jobs:
       - name: Build credential shim (archbox-rootenv)
         run: |
           set -e
-          ROOTENV_COMMIT=9d8a0dd4c52771064625418dedaae3bbd9c62fd4
+          ROOTENV_COMMIT=1df70430d12209e65bd9a5a3b86414faa271f821
           sudo apt-get install -y -qq gcc-aarch64-linux-gnu
           git clone -q https://github.com/enderman-claude/archbox-rootenv rootenv
           git -C rootenv checkout -q "$ROOTENV_COMMIT"
@@ -142,7 +142,7 @@ jobs:
       - name: Build credential shim (archbox-rootenv)
         run: |
           set -e
-          ROOTENV_COMMIT=9d8a0dd4c52771064625418dedaae3bbd9c62fd4
+          ROOTENV_COMMIT=1df70430d12209e65bd9a5a3b86414faa271f821
           sudo apt-get install -y -qq gcc-aarch64-linux-gnu
           git clone -q https://github.com/enderman-claude/archbox-rootenv rootenv
           git -C rootenv checkout -q "$ROOTENV_COMMIT"
