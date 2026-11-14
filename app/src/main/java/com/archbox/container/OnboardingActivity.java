@@ -28,7 +28,7 @@ import java.io.File;
  */
 public class OnboardingActivity extends Activity implements InstallService.Watcher {
     private static final int RC_PICK = 1, RC_EXPORT = 2, RC_NOTIF = 3;
-    private static final int FG = 0xFFE6E6E6, DIM = 0xFF9AA0A6, ACCENT = 0xFF4FC3F7, ERR = 0xFFFF6B6B;
+    private static final int FG = Term.FG, DIM = Term.DIM, ACCENT = Term.GREEN, ERR = Term.RED;
 
     private Bootstrap bootstrap;
     private Uri picked, export;
@@ -75,7 +75,7 @@ public class OnboardingActivity extends Activity implements InstallService.Watch
     private TextView text(String s, int sp, int color, boolean bold) {
         TextView t = new TextView(this);
         t.setText(s); t.setTextSize(sp); t.setTextColor(color);
-        if (bold) t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setTypeface(Typeface.MONOSPACE);
         return t;
     }
 

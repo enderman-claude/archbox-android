@@ -93,11 +93,10 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
         long seen = prefs.getLong("updateNoticeTs", 0);
         if (last.getTimestamp() <= seen) return;               // already shown for this exit
         prefs.edit().putLong("updateNoticeTs", last.getTimestamp()).apply();
-        new AlertDialog.Builder(this)
-                .setMessage("Archbox was updated to " + BuildConfig.VERSION_NAME
-                        + " while a container was running, so that session was stopped. Press Enter to start the container again.")
-                .setPositiveButton("OK", null)
-                .show();
+        Term.notice(this, "archbox update",
+                "Archbox was updated to " + BuildConfig.VERSION_NAME
+                        + " while a container was running, so that session was stopped.\n\nPress Enter to start the container again.",
+                null);
     }
 
     static final String VERSION = BuildConfig.GIT_SHA + " sdk" + BuildConfig.TARGET_SDK;
