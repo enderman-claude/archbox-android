@@ -70,7 +70,12 @@ final class Term {
 
         d.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
         d.setContentView(col);
-        if (d.getWindow() != null) d.getWindow().setBackgroundDrawable(new ColorDrawable(BG));
+        if (d.getWindow() != null) {
+            /* wide panel: 90% of the screen, so the header and body don't wrap word by word */
+            int w = (int) (c.getResources().getDisplayMetrics().widthPixels * 0.9f);
+            d.getWindow().setLayout(w, android.view.WindowManager.LayoutParams.WRAP_CONTENT);
+            d.getWindow().setBackgroundDrawable(new ColorDrawable(BG));
+        }
         d.show();
     }
 }

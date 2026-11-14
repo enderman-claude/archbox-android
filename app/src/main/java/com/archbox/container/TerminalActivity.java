@@ -184,7 +184,8 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
     private void showMenu() {
         String[] items = {"Restart session", "Backend: " + backendLabel(tierOverride()) + "...",
                 "Text larger", "Text smaller", "Reinstall rootfs...", "Send Ctrl+C", "Key debug: " + (keyDebug ? "on" : "off"), "Diagnostics (processes)", "Recovery shell (no login scripts)",
-                "Extended debug: " + (extendedDebug() ? "on" : "off")};
+                "Extended debug: " + (extendedDebug() ? "on" : "off"),
+                "Crash test: null dereference (needs Extended debug)"};
         new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
                 .setTitle("Archbox " + VERSION)
                 .setItems(items, (d, which) -> {
@@ -202,6 +203,12 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
                             if (extendedDebug()) debugFile().delete();
                             else try { debugFile().createNewFile(); } catch (Exception ignored) { }
                             restartContainer();
+                            break;
+                        case 10:
+                            if (!extendedDebug()) { debug("turn on Extended debug first"); break; }
+                            /* Deliberate: dereference null so the app's crash path (crash.txt, then the crash screen) runs. */
+                            String nothing = null;
+                            debug("crashing on purpose: " + nothing.length());
                             break;
                     }
                 }).show();
