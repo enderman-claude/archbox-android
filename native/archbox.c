@@ -498,6 +498,18 @@ static int start_faked(const char *dir, const char *root, const char *ld, const 
     return 0;
 }
 
+/* Debug: which seccomp mode this process runs under (0 none, 1 strict, 2 filter). */
+static void dump_seccomp(const char *who) {
+    FILE *f = fopen("/proc/self/status", "r");
+    if (!f) return;
+    char line[256];
+    while (fgets(line, sizeof line, f)) {
+        if (!strncmp(line, "Seccomp:", 8) || !strncmp(line, "NoNewPrivs:", 11))
+            fprintf(stderr, "archbox debug [%s] %s", who, line);
+    }
+    fclose(f);
+}
+
 static int run_fakechroot(const char *root, char **cmd, const char *tty) {
     (void)tty;                                            /* stdin/out/err already are the pty */
     char dir[512], fc[640], fr[640], ld[640], rootlib[640], libpath[1300], preload[1300], excl[1400];
@@ -520,6 +532,7 @@ static int run_fakechroot(const char *root, char **cmd, const char *tty) {
     snprintf(tmp, sizeof tmp, "%s", (t && *t) ? t : "/tmp");
     snprintf(excl, sizeof excl, "/dev:/proc:/sys:%s:%s", dir, tmp);
 
+    dump_seccomp("before fakechroot");
     char key[32] = "";
     int have_faked = start_faked(dir, root, ld, libpath, key, sizeof key) == 0;
     if (!have_faked)
@@ -581,6 +594,13 @@ static int run_fakechroot(const char *root, char **cmd, const char *tty) {
     int status = 0;
     while (waitpid(child_pid, &status, 0) < 0 && errno == EINTR) {}
     kill_faked();
+    if (WIFSIGNALED(status)) {
+        int sig = WTERMSIG(status);
+        fprintf(stderr, "archbox: fakechroot guest killed by signal %d (%s)%s\n", sig,
+                sig == SIGSYS ? "SIGSYS: blocked syscall" : sig == SIGSEGV ? "SIGSEGV" : "other",
+                have_faked ? "" : " [faked was not running]");
+        dump_seccomp("fakechroot parent");
+    }
     return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
 }
 
@@ -612,6 +632,7 @@ int main(int argc, char **argv) {
     int ns = (pin && !strcmp(pin, "unshare")) ? 0 : probe_namespaces();
     if (ns != 0) {
         fprintf(stderr, "archbox %s: no namespaces (%s)\n", ver ? ver : "?", ns > 0 ? strerror(ns) : "blocked");
+        diagnose();
         fprintf(stderr, "archbox %s: testing proot...\n", ver ? ver : "?");
         if (proot_works(root, tty)) {
             fprintf(stderr, "archbox %s: proot ok, using proot\n", ver ? ver : "?");
