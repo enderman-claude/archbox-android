@@ -104,6 +104,10 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
 
     private File tierFile() { return new File(getFilesDir(), "archbox-tier"); }
 
+    /** Extended debug: loader trace, syscall probe and process dumps. Off by default. */
+    private File debugFile() { return new File(getFilesDir(), "archbox-debug"); }
+    private boolean extendedDebug() { return debugFile().exists(); }
+
     /** Manual backend override written by the menu: unshare | proot | fakechroot (absent = automatic). */
     private String tierOverride() {
         try {
@@ -122,6 +126,7 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
             "ARCHBOX_TMP=" + new File(getFilesDir(), "proot-tmp").getPath()));
         String tier = tierOverride();
         if (tier != null) e.add("ARCHBOX_TIER=" + tier);
+        if (extendedDebug()) e.add("ARCHBOX_DEBUG=1");
         return e.toArray(new String[0]);
     }
 
@@ -172,7 +177,8 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
 
     private void showMenu() {
         String[] items = {"Restart session", "Backend: " + (tierOverride() == null ? "auto" : tierOverride()) + "...",
-                "Text larger", "Text smaller", "Reinstall rootfs...", "Send Ctrl+C", "Key debug: " + (keyDebug ? "on" : "off"), "Diagnostics (processes)", "Recovery shell (no login scripts)"};
+                "Text larger", "Text smaller", "Reinstall rootfs...", "Send Ctrl+C", "Key debug: " + (keyDebug ? "on" : "off"), "Diagnostics (processes)", "Recovery shell (no login scripts)",
+                "Extended debug: " + (extendedDebug() ? "on" : "off")};
         new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
                 .setTitle("Archbox " + VERSION)
                 .setItems(items, (d, which) -> {
@@ -186,6 +192,11 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
                         case 7: showDiagnostics(); break;
                         case 8: recoveryShell(); break;
                         case 6: keyDebug = !keyDebug; debug("key debug " + (keyDebug ? "on: type something" : "off")); break;
+                        case 9:
+                            if (extendedDebug()) debugFile().delete();
+                            else try { debugFile().createNewFile(); } catch (Exception ignored) { }
+                            restartContainer();
+                            break;
                     }
                 }).show();
     }

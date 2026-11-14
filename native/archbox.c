@@ -510,6 +510,9 @@ static int start_faked(const char *dir, const char *root, const char *ld, const 
 struct sc_probe { const char *name; long nr; long a, b, c, d; };
 #define SCP(name, a1, a2, a3, a4) { #name, SYS_##name, (long)(a1), (long)(a2), (long)(a3), (long)(a4) }
 
+/* Extended debug: set by ARCHBOX_DEBUG=1 (menu: Extended debug). Off = quiet launcher. */
+static int dbg_on;
+
 /* ---- debug layer (beta 9): process, file, environment and live-syscall tracing ----------- */
 #include <dirent.h>
 #include <pthread.h>
@@ -686,6 +689,7 @@ static void scan_syscalls(void) {
 
 /* Debug: which seccomp mode this process runs under (0 none, 1 strict, 2 filter). */
 static void dump_seccomp(const char *who) {
+    if (!dbg_on) return;
     FILE *f = fopen("/proc/self/status", "r");
     if (!f) return;
     char line[256];
@@ -719,7 +723,7 @@ static int run_fakechroot(const char *root, char **cmd, const char *tty) {
     snprintf(excl, sizeof excl, "/dev:/proc:/sys:%s:%s", dir, tmp);
 
     dump_seccomp("before fakechroot");
-    scan_syscalls();
+    if (dbg_on) scan_syscalls();
     char key[32] = "";
     int have_faked = start_faked(dir, root, ld, libpath, key, sizeof key) == 0;
     if (!have_faked)
@@ -809,10 +813,12 @@ static int run_shim(const char *root, char **cmd, const char *tty) {
     if (access(ld, X_OK) < 0) die(ld);
     snprintf(libpath, sizeof libpath, "%s:%s", dir, rootlib);
     fprintf(stderr, "archbox debug [shim] preloading %s\n", cred);
-    scan_syscalls();   /* same blocked-call table as the fakechroot tier, to compare */
-    dbg_file("shim", ld);
-    dbg_file("shim", cred);
-    dbg_file("shim", rootlib);
+    if (dbg_on) {
+        scan_syscalls();   /* same blocked-call table as the fakechroot tier, to compare */
+        dbg_file("shim", ld);
+        dbg_file("shim", cred);
+        dbg_file("shim", rootlib);
+    }
 
     const char *term = getenv("TERM");
     char termbuf[64];
@@ -828,7 +834,7 @@ static int run_shim(const char *root, char **cmd, const char *tty) {
     setenv("GLIBC_TUNABLES", "glibc.pthread.rseq=0", 1);
     setenv("LD_LIBRARY_PATH", libpath, 1);
     setenv("LD_PRELOAD", cred, 1);
-    setenv("LD_DEBUG", "libs,files,bindings,statistics", 1);   /* loader trace for the shim guest */
+    if (dbg_on) setenv("LD_DEBUG", "libs,files,bindings,statistics", 1);   /* loader trace for the shim guest */
 
     char prog[700], *argv[64];
     int a = 0;
@@ -856,20 +862,19 @@ static int run_shim(const char *root, char **cmd, const char *tty) {
     }
     signal(SIGTERM, forward_fc); signal(SIGHUP, forward_fc); signal(SIGINT, forward_fc);
     mon_pid = child_pid; mon_run = 1;
-    pthread_t mt; int have_mon = pthread_create(&mt, NULL, mon_thread, NULL) == 0;
+    pthread_t mt; int have_mon = dbg_on && pthread_create(&mt, NULL, mon_thread, NULL) == 0;
     int status = 0;
     while (waitpid(child_pid, &status, 0) < 0 && errno == EINTR) {}
     if (have_mon) { mon_run = 0; pthread_join(mt, NULL); }
-    mon_report();
-    dbg_proc("shim parent", "/proc/self/status");
+    if (dbg_on) { mon_report(); dbg_proc("shim parent", "/proc/self/status"); }
     if (WIFSIGNALED(status))
         fprintf(stderr, "archbox: shim guest killed by signal %d\n", WTERMSIG(status));
     return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
 }
 
 int main(int argc, char **argv) {
-    dbg_startup("launcher");
-    dbg_env("launcher");
+    dbg_on = getenv("ARCHBOX_DEBUG") && !strcmp(getenv("ARCHBOX_DEBUG"), "1");
+    if (dbg_on) { dbg_startup("launcher"); dbg_env("launcher"); }
     if (argc < 2) { fprintf(stderr, "usage: %s <rootfs> [cmd...]\n", argv[0]); return 2; }
     const char *root = argv[1];
     uid_t uid = getuid(); gid_t gid = getgid();
