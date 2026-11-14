@@ -104,6 +104,13 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
 
     private File tierFile() { return new File(getFilesDir(), "archbox-tier"); }
 
+    /** Menu text for a backend value. The stored value stays lowercase; only the display changes. */
+    private static String backendLabel(String tier) {
+        if (tier == null) return "auto";
+        if (tier.equals("shim")) return "Archbox Shim";
+        return tier;
+    }
+
     /** Extended debug: loader trace, syscall probe and process dumps. Off by default. */
     private File debugFile() { return new File(getFilesDir(), "archbox-debug"); }
     private boolean extendedDebug() { return debugFile().exists(); }
@@ -176,7 +183,7 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
     // ---- menu ----------------------------------------------------------------------------
 
     private void showMenu() {
-        String[] items = {"Restart session", "Backend: " + (tierOverride() == null ? "auto" : tierOverride()) + "...",
+        String[] items = {"Restart session", "Backend: " + backendLabel(tierOverride()) + "...",
                 "Text larger", "Text smaller", "Reinstall rootfs...", "Send Ctrl+C", "Key debug: " + (keyDebug ? "on" : "off"), "Diagnostics (processes)", "Recovery shell (no login scripts)",
                 "Extended debug: " + (extendedDebug() ? "on" : "off")};
         new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
@@ -273,7 +280,7 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
     private void chooseBackend() {
         final String[] values = {null, "unshare", "proot", "fakechroot", "shim"};
         String[] labels = {"Automatic (unshare, then proot, then fakechroot)", "unshare (namespaces)",
-                "proot", "fakechroot", "shim (credential shim, test)"};
+                "proot", "fakechroot", "Archbox Shim"};
         new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
                 .setTitle("Container backend")
                 .setItems(labels, (d, which) -> {
