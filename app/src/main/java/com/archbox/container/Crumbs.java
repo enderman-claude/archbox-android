@@ -60,7 +60,10 @@ final class Crumbs {
             for (ApplicationExitInfo i : l) {
                 int r = i.getReason();
                 if (i.getTimestamp() <= ack) continue;
+                // not crashes: user stops, clean exits, and installs over a running app (reason 16).
+                // The update case is reported by TerminalActivity instead.
                 if (r == ApplicationExitInfo.REASON_USER_REQUESTED || r == ApplicationExitInfo.REASON_USER_STOPPED
+                        || r == ApplicationExitInfo.REASON_PACKAGE_UPDATED
                         || (r == ApplicationExitInfo.REASON_EXIT_SELF && i.getStatus() == 0)) continue;
                 sb.append("Previous exit: reason=").append(r).append(" status=").append(i.getStatus())
                   .append(" desc=").append(i.getDescription()).append('\n');
