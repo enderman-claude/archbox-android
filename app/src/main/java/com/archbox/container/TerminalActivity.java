@@ -87,7 +87,9 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
         java.util.List<android.app.ApplicationExitInfo> infos = am.getHistoricalProcessExitReasons(getPackageName(), 0, 1);
         if (infos.isEmpty()) return;
         android.app.ApplicationExitInfo last = infos.get(0);
-        if (last.getReason() != android.app.ApplicationExitInfo.REASON_PACKAGE_UPDATED) return;
+        int r = last.getReason();
+        if (r != android.app.ApplicationExitInfo.REASON_PACKAGE_UPDATED
+                && r != android.app.ApplicationExitInfo.REASON_OTHER) return;  // system stops during updates
         long seen = prefs.getLong("updateNoticeTs", 0);
         if (last.getTimestamp() <= seen) return;               // already shown for this exit
         prefs.edit().putLong("updateNoticeTs", last.getTimestamp()).apply();
