@@ -491,7 +491,11 @@ static int start_faked(const char *dir, const char *root, const char *ld, const 
     if (poll(&pf, 1, 5000) > 0) { ssize_t n = read(fds[0], buf, sizeof buf - 1); if (n > 0) buf[n] = 0; }
     close(fds[0]);
     char *colon = strchr(buf, ':');
-    if (!colon) { kill_faked(); return -1; }
+    if (!colon) {
+        fprintf(stderr, "archbox debug [faked] no key from daemon (got %zu bytes: \"%s\")\n", strlen(buf), buf);
+        kill_faked();
+        return -1;
+    }
     *colon = 0;
     snprintf(key, keylen, "%s", buf);
     (void)root;
@@ -532,6 +536,12 @@ static void scan_syscalls(void) {
         SCP(sched_setattr, -1, 0, 0, 0),     /* bad pid: EINVAL */
         SCP(kcmp, -1, -1, -1, 0),            /* bad pids: ESRCH */
         SCP(process_vm_readv, -1, 0, 0, 0),  /* bad pid: ESRCH */
+        SCP(listen, -1, 0, 0, 0),            /* bad fd: EBADF (faked serves on a TCP socket) */
+        SCP(accept4, -1, 0, 0, 0),           /* bad fd: EBADF */
+        SCP(getsockname, -1, 0, 0, 0),       /* bad fd: EBADF */
+        SCP(setsockopt, -1, 0, 0, 0),        /* bad fd: EBADF */
+        SCP(setpgid, -1, -1, 0, 0),          /* bad pid: ESRCH/EINVAL */
+        SCP(setsid, 0, 0, 0, 0),             /* child session: harmless */
     };
     int n = (int)(sizeof list / sizeof list[0]);
     int blocked = 0;

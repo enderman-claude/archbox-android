@@ -75,7 +75,27 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
         setContentView(col);
 
         Crumbs.add(this, "views ready");
+        noteIfUpdatedWhileRunning();
         startContainer();
+    }
+
+    /* Android stops a running app when a new build is installed over it. Say so once, instead of
+       leaving the user to wonder why the session ended. Uses the exit history (API 30+). */
+    private void noteIfUpdatedWhileRunning() {
+        if (android.os.Build.VERSION.SDK_INT < 30) return;
+        android.app.ActivityManager am = (android.app.ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+        java.util.List<android.app.ApplicationExitInfo> infos = am.getHistoricalProcessExitReasons(getPackageName(), 0, 1);
+        if (infos.isEmpty()) return;
+        android.app.ApplicationExitInfo last = infos.get(0);
+        if (last.getReason() != android.app.ApplicationExitInfo.REASON_PACKAGE_UPDATED) return;
+        long seen = prefs.getLong("updateNoticeTs", 0);
+        if (last.getTimestamp() <= seen) return;               // already shown for this exit
+        prefs.edit().putLong("updateNoticeTs", last.getTimestamp()).apply();
+        new AlertDialog.Builder(this)
+                .setMessage("Archbox was updated to " + BuildConfig.VERSION_NAME
+                        + " while a container was running, so that session was stopped. Press Enter to start the container again.")
+                .setPositiveButton("OK", null)
+                .show();
     }
 
     static final String VERSION = BuildConfig.GIT_SHA + " sdk" + BuildConfig.TARGET_SDK;
