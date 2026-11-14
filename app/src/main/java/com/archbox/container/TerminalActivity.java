@@ -1,4 +1,4 @@
-package dev.archbox;
+package com.archbox.container;
 
 import android.app.Activity;
 import android.app.AlertDialog;

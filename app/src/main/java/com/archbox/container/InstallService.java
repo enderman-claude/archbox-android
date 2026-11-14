@@ -1,4 +1,4 @@
-package dev.archbox;
+package com.archbox.container;
 
 import android.app.Notification;
 import android.app.NotificationChannel;
@@ -25,8 +25,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * Plain Android classes only: no Termux code is loaded in this path.
  */
 public class InstallService extends Service {
-    static final String ACTION_START = "dev.archbox.INSTALL_START";
-    static final String ACTION_CANCEL = "dev.archbox.INSTALL_CANCEL";
+    static final String ACTION_START = "com.archbox.container.INSTALL_START";
+    static final String ACTION_CANCEL = "com.archbox.container.INSTALL_CANCEL";
     private static final String CHANNEL = "install";
     private static final int ID = 1, ID_DONE = 2;
 

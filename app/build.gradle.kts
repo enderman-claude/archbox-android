@@ -1,10 +1,10 @@
 plugins { id("com.android.application") }
 
 android {
-    namespace = "dev.archbox"
+    namespace = "com.archbox.container"
     compileSdk = 34
     defaultConfig {
-        applicationId = "dev.archbox"
+        applicationId = "com.archbox.container"
         minSdk = 26
         // targetSdk 28 on purpose: from 29 on, SELinux forbids executing files
         // from the app data dir, which is where the Arch rootfs lives.
