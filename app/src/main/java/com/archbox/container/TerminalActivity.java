@@ -106,7 +106,7 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
     private String tierOverride() {
         try {
             String t = new String(java.nio.file.Files.readAllBytes(tierFile().toPath()), StandardCharsets.UTF_8).trim();
-            return (t.equals("unshare") || t.equals("proot") || t.equals("fakechroot")) ? t : null;
+            return (t.equals("unshare") || t.equals("proot") || t.equals("fakechroot") || t.equals("shim")) ? t : null;
         } catch (Exception e) { return null; }
     }
 
@@ -258,9 +258,9 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
     }
 
     private void chooseBackend() {
-        final String[] values = {null, "unshare", "proot", "fakechroot"};
+        final String[] values = {null, "unshare", "proot", "fakechroot", "shim"};
         String[] labels = {"Automatic (unshare, then proot, then fakechroot)", "unshare (namespaces)",
-                "proot", "fakechroot"};
+                "proot", "fakechroot", "shim (credential shim, test)"};
         new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
                 .setTitle("Container backend")
                 .setItems(labels, (d, which) -> {
