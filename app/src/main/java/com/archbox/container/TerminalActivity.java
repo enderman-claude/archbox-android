@@ -280,7 +280,7 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
     private void chooseBackend() {
         final String[] values = {null, "unshare", "proot", "fakechroot", "shim"};
         String[] labels = {"Automatic (unshare, then proot, then fakechroot)", "unshare (namespaces)",
-                "proot", "fakechroot", "Archbox Shim"};
+                "proot", "fakechroot", "Archbox Shim (experimental)"};
         new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
                 .setTitle("Container backend")
                 .setItems(labels, (d, which) -> {
