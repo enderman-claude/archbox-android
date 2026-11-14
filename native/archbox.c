@@ -833,7 +833,14 @@ static int run_shim(const char *root, char **cmd, const char *tty) {
     setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/bin", 1);
     setenv("GLIBC_TUNABLES", "glibc.pthread.rseq=0", 1);
     setenv("LD_LIBRARY_PATH", libpath, 1);
-    setenv("LD_PRELOAD", cred, 1);
+    /* Same heap setup as PRoot's guest: untagged malloc (libnotag constructor) and MEMTAG_OPTIONS=off.
+       Without this the guest gets Android's default pointer tagging, which PRoot's guest never has. */
+    char notag[600], preload[1300];
+    snprintf(notag, sizeof notag, "%s/libnotag.so", dir);
+    int have_notag = access(notag, R_OK) == 0;
+    snprintf(preload, sizeof preload, "%s%s%s", have_notag ? notag : "", have_notag ? ":" : "", cred);
+    setenv("LD_PRELOAD", preload, 1);
+    setenv("MEMTAG_OPTIONS", "off", 1);
     if (dbg_on) setenv("LD_DEBUG", "libs,files,bindings,statistics", 1);   /* loader trace for the shim guest */
 
     char prog[700], *argv[64];
