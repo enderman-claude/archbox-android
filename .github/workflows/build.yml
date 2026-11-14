@@ -160,7 +160,7 @@ jobs:
         run: |
           echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/archbox-release.jks"
           echo "ARCHBOX_KEYSTORE_PATH=$RUNNER_TEMP/archbox-release.jks" >> "$GITHUB_ENV"
-      - name: Assemble signed release APK
+      - name: Assemble signed release APKs (main, SDK 28, SDK 34)
         env:
           ARCHBOX_KEYSTORE_PASSWORD: ${{ secrets.ARCHBOX_KEYSTORE_PASSWORD }}
           ARCHBOX_KEY_ALIAS: ${{ secrets.ARCHBOX_KEY_ALIAS }}
@@ -169,11 +169,18 @@ jobs:
           TAG=${GITHUB_REF_NAME#v}
           VCODE=$(echo "$TAG" | awk -F. '{printf "%d", $1*10000+$2*100+$3}')
           python3 -m pip install --quiet pillow
-          python3 tools/gen_icon.py "$GITHUB_SHA" 28 app/src/main/res/drawable-nodpi/ic_launcher.png
-          gradle --no-daemon assembleRelease -Ptsdk=28 -Pgitsha=$GITHUB_SHA -Pvname=$TAG -Pvcode=$VCODE
+          ICON=app/src/main/res/drawable-nodpi/ic_launcher.png
           mkdir -p out
-          cp app/build/outputs/apk/release/app-release.apk out/archbox-$TAG.apk
-          apksigner verify --print-certs out/archbox-$TAG.apk | head -3 || true
+          # main = SDK 34 with the plain package name; SDK builds carry .t<sdk>
+          build() { # $1 = tsdk, $2 = main flag, $3 = output name
+            python3 tools/gen_icon.py "$GITHUB_SHA" "$1" $ICON
+            gradle --no-daemon assembleRelease -Ptsdk=$1 -Pmain=$2 -Pgitsha=$GITHUB_SHA -Pvname=$TAG -Pvcode=$VCODE
+            cp app/build/outputs/apk/release/app-release.apk "out/$3"
+          }
+          build 34 true  "archbox-$TAG.apk"
+          build 28 false "archbox-$TAG-sdk28.apk"
+          build 34 false "archbox-$TAG-sdk34.apk"
+          ls -la out
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
