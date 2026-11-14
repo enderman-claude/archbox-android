@@ -16,8 +16,8 @@ android {
         buildConfigField("String", "GIT_SHA", "\"${sha.take(7)}\"")
         buildConfigField("int", "TARGET_SDK", "$tsdk")
         if (tsdk != 28) applicationIdSuffix = ".t$tsdk"
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = (findProperty("vcode") as String?)?.toInt() ?: 1
+        versionName = (findProperty("vname") as String?) ?: "0.1"
         ndk { abiFilters += "arm64-v8a" }
     }
     compileOptions {
@@ -27,6 +27,23 @@ android {
     packaging {
         // The launcher is shipped as libarchbox.so and must exist as a real file.
         jniLibs { useLegacyPackaging = true }
+    }
+    // Release identity lives outside the repo: the keystore comes from CI secrets (see
+    // .github/workflows/build.yml). Without the env vars, release falls back to the debug key.
+    signingConfigs {
+        create("release") {
+            System.getenv("ARCHBOX_KEYSTORE_PATH")?.let { storeFile = file(it) }
+            storePassword = System.getenv("ARCHBOX_KEYSTORE_PASSWORD")
+            keyAlias = System.getenv("ARCHBOX_KEY_ALIAS")
+            keyPassword = System.getenv("ARCHBOX_KEY_PASSWORD")
+            storeType = "pkcs12"
+        }
+    }
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            if (System.getenv("ARCHBOX_KEYSTORE_PATH") != null) signingConfig = signingConfigs.getByName("release")
+        }
     }
     buildFeatures { buildConfig = true }
     lint { abortOnError = false; checkReleaseBuilds = false }

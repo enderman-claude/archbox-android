@@ -1,6 +1,8 @@
 name: build-apk
 on:
   push:
+    branches: ['**']
+    tags: ['v*']
   workflow_dispatch:
 
 jobs:
@@ -107,3 +109,72 @@ jobs:
         with:
           name: archbox-debug-apk
           path: out/*.apk
+
+  # Release: pushing a tag vX.Y.Z builds a signed release APK (identity from CI secrets, never in the
+  # repo) and publishes it on the GitHub Release for that tag.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: []
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+      - name: Build launcher with the NDK
+        run: |
+          NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_ROOT}"
+          CC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
+          mkdir -p app/src/main/jniLibs/arm64-v8a
+          "$CC" -O2 -Wall -fPIE -pie -Wl,-z,max-page-size=16384 -o app/src/main/jniLibs/arm64-v8a/libarchbox.so native/archbox.c
+          "$CC" -O2 -fPIC -shared -o app/src/main/jniLibs/arm64-v8a/libnotag.so native/notag.c
+      - name: Fetch PRoot
+        run: |
+          set -e
+          COMMIT=01f83b8841358450c78333d1b33ab30d4943bec4
+          SHA=9629eb30cdf86e95c6ba681f8ab89c6fdaa9eca093d5577163513c99af5ca281
+          curl -fsSL -o proot.tgz "https://raw.githubusercontent.com/green-green-avk/build-proot-android/$COMMIT/packages/proot-android-aarch64.tar.gz"
+          echo "$SHA  proot.tgz" | sha256sum -c -
+          mkdir -p proot-x app/src/main/jniLibs/arm64-v8a
+          tar xzf proot.tgz -C proot-x
+          J=app/src/main/jniLibs/arm64-v8a
+          cp proot-x/root/bin/proot $J/libproot.so
+          cp proot-x/root/bin/proot-userland $J/libproot-userland.so
+          cp proot-x/root/libexec/proot/loader $J/libproot-loader.so
+          sudo apt-get install -y -qq patchelf
+          for f in libproot.so libproot-userland.so; do patchelf --add-needed libnotag.so --set-rpath '$ORIGIN' "$J/$f"; done
+      - name: Get fakechroot + fakeroot (glibc aarch64)
+        continue-on-error: true
+        run: |
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu autoconf automake libtool make zstd xz-utils patch file
+          bash tools/fetch_fakechroot.sh app/src/main/jniLibs/arm64-v8a
+      - name: Decode release keystore
+        env:
+          KS_B64: ${{ secrets.ARCHBOX_KEYSTORE_B64 }}
+        run: |
+          echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/archbox-release.jks"
+          echo "ARCHBOX_KEYSTORE_PATH=$RUNNER_TEMP/archbox-release.jks" >> "$GITHUB_ENV"
+      - name: Assemble signed release APK
+        env:
+          ARCHBOX_KEYSTORE_PASSWORD: ${{ secrets.ARCHBOX_KEYSTORE_PASSWORD }}
+          ARCHBOX_KEY_ALIAS: ${{ secrets.ARCHBOX_KEY_ALIAS }}
+          ARCHBOX_KEY_PASSWORD: ${{ secrets.ARCHBOX_KEY_PASSWORD }}
+        run: |
+          TAG=${GITHUB_REF_NAME#v}
+          VCODE=$(echo "$TAG" | awk -F. '{printf "%d", $1*10000+$2*100+$3}')
+          python3 -m pip install --quiet pillow
+          python3 tools/gen_icon.py "$GITHUB_SHA" 28 app/src/main/res/drawable-nodpi/ic_launcher.png
+          gradle --no-daemon assembleRelease -Ptsdk=28 -Pgitsha=$GITHUB_SHA -Pvname=$TAG -Pvcode=$VCODE
+          mkdir -p out
+          cp app/build/outputs/apk/release/app-release.apk out/archbox-$TAG.apk
+          apksigner verify --print-certs out/archbox-$TAG.apk | head -3 || true
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" out/*.apk --title "Archbox $GITHUB_REF_NAME" --generate-notes
