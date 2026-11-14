@@ -672,6 +672,72 @@ static int run_fakechroot(const char *root, char **cmd, const char *tty) {
     return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
 }
 
+/* ---- tier 4 (shim, pinned only): glibc loader + the archbox-rootenv credential shim -----------
+   No namespaces, no ptrace, no faked daemon. The loader runs the rootfs binaries with only
+   libfakeroot-credentials.so preloaded, so uid/gid/group calls are answered in-process. Crude
+   test backend: selected with ARCHBOX_TIER=shim, never by the automatic fallback. */
+static int run_shim(const char *root, char **cmd, const char *tty) {
+    (void)tty;
+    char dir[512], cred[640], ld[640], rootlib[640], libpath[1300];
+    exe_dir(dir, sizeof dir);
+    snprintf(cred, sizeof cred, "%s/libfakeroot-credentials.so", dir);
+    snprintf(ld, sizeof ld, "%s" LD_SO, root);
+    snprintf(rootlib, sizeof rootlib, "%s/usr/lib", root);
+    if (access(cred, R_OK) < 0) {
+        fprintf(stderr, "archbox: shim tier unavailable: %s not bundled\n", cred);
+        return 126;
+    }
+    if (access(ld, X_OK) < 0) die(ld);
+    snprintf(libpath, sizeof libpath, "%s:%s", dir, rootlib);
+    fprintf(stderr, "archbox debug [shim] preloading %s\n", cred);
+
+    const char *term = getenv("TERM");
+    char termbuf[64];
+    snprintf(termbuf, sizeof termbuf, "%s", term ? term : "xterm-256color");
+    clearenv();
+    setenv("TERM", termbuf, 1);
+    setenv("HOME", "/root", 1);
+    setenv("USER", "root", 1);
+    setenv("LOGNAME", "root", 1);
+    setenv("SHELL", "/bin/bash", 1);
+    setenv("LANG", "C.UTF-8", 1);
+    setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/bin", 1);
+    setenv("GLIBC_TUNABLES", "glibc.pthread.rseq=0", 1);
+    setenv("LD_LIBRARY_PATH", libpath, 1);
+    setenv("LD_PRELOAD", cred, 1);
+
+    char prog[700], *argv[64];
+    int a = 0;
+    argv[a++] = "ld-linux-aarch64.so.1";
+    argv[a++] = "--library-path"; argv[a++] = libpath;
+    if (cmd[0]) {
+        snprintf(prog, sizeof prog, "%s%s", cmd[0][0] == '/' ? root : "", cmd[0]);
+        argv[a++] = prog;
+        for (int i = 1; cmd[i] && a < 62; i++) argv[a++] = cmd[i];
+    } else {
+        snprintf(prog, sizeof prog, "%s/usr/bin/bash", root);
+        argv[a++] = prog; argv[a++] = "--login"; argv[a++] = "-i";
+    }
+    argv[a] = NULL;
+
+    if (chdir(root) < 0) die("chdir rootfs");
+    child_pid = fork();
+    if (child_pid < 0) die("fork");
+    if (child_pid == 0) {
+        char cwd[700]; snprintf(cwd, sizeof cwd, "%s/root", root);
+        if (chdir(cwd) < 0) chdir(root);
+        execv(ld, argv);
+        fprintf(stderr, "archbox: exec %s: %s\n", ld, strerror(errno));
+        _exit(127);
+    }
+    signal(SIGTERM, forward_fc); signal(SIGHUP, forward_fc); signal(SIGINT, forward_fc);
+    int status = 0;
+    while (waitpid(child_pid, &status, 0) < 0 && errno == EINTR) {}
+    if (WIFSIGNALED(status))
+        fprintf(stderr, "archbox: shim guest killed by signal %d\n", WTERMSIG(status));
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "usage: %s <rootfs> [cmd...]\n", argv[0]); return 2; }
     const char *root = argv[1];
@@ -692,6 +758,10 @@ int main(int argc, char **argv) {
     if (pin && !strcmp(pin, "proot")) {
         fprintf(stderr, "archbox %s: tier pinned to proot\n", ver ? ver : "?");
         return run_proot(root, argv + 2, tty, 0);
+    }
+    if (pin && !strcmp(pin, "shim")) {
+        fprintf(stderr, "archbox %s: tier pinned to shim\n", ver ? ver : "?");
+        return run_shim(root, argv + 2, tty);
     }
     if (pin && !strcmp(pin, "fakechroot")) {
         fprintf(stderr, "archbox %s: tier pinned to fakechroot\n", ver ? ver : "?");
