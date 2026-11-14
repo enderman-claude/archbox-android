@@ -625,12 +625,20 @@ static int run_fakechroot(const char *root, char **cmd, const char *tty) {
     setenv("FAKECHROOT_EXCLUDE_PATH", excl, 1);
     setenv("LD_LIBRARY_PATH", libpath, 1);
     /* what `fakeroot` would export */
+    /* Test: the credential shim from archbox-rootenv goes first, so it answers uid/gid/group
+       calls before libfakeroot does. Crude and untested on device: this is an attempt to start. */
+    char cred[700], pl[1600];
+    snprintf(cred, sizeof cred, "%s/libfakeroot-credentials.so", dir);
+    int have_cred = access(cred, R_OK) == 0;
+    fprintf(stderr, "archbox debug [credentials] shim %s\n", have_cred ? cred : "not bundled");
     if (have_faked) {
         setenv("FAKEROOTKEY", key, 1);
         setenv("FAKED_MODE", "unknown-is-real", 1);
-        setenv("LD_PRELOAD", preload, 1);
+        snprintf(pl, sizeof pl, "%s%s%s", have_cred ? cred : "", have_cred ? ":" : "", preload);
+        setenv("LD_PRELOAD", pl, 1);
     } else {
-        setenv("LD_PRELOAD", fc, 1);
+        snprintf(pl, sizeof pl, "%s%s%s", have_cred ? cred : "", have_cred ? ":" : "", fc);
+        setenv("LD_PRELOAD", pl, 1);
     }
 
     /* argv[0]: absolute guest paths must be turned into host paths for this first exec */
