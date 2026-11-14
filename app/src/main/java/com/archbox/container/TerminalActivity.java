@@ -1,4 +1,4 @@
-package dev.archbox;
+package com.archbox.container;
 
 import android.app.Activity;
 import android.app.AlertDialog;
@@ -75,18 +75,50 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
         setContentView(col);
 
         Crumbs.add(this, "views ready");
+        noteIfUpdatedWhileRunning();
         startContainer();
+    }
+
+    /* Android stops a running app when a new build is installed over it. Say so once, instead of
+       leaving the user to wonder why the session ended. Uses the exit history (API 30+). */
+    private void noteIfUpdatedWhileRunning() {
+        if (android.os.Build.VERSION.SDK_INT < 30) return;
+        android.app.ActivityManager am = (android.app.ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+        java.util.List<android.app.ApplicationExitInfo> infos = am.getHistoricalProcessExitReasons(getPackageName(), 0, 1);
+        if (infos.isEmpty()) return;
+        android.app.ApplicationExitInfo last = infos.get(0);
+        int r = last.getReason();
+        if (r != android.app.ApplicationExitInfo.REASON_PACKAGE_UPDATED
+                && r != android.app.ApplicationExitInfo.REASON_OTHER) return;  // system stops during updates
+        long seen = prefs.getLong("updateNoticeTs", 0);
+        if (last.getTimestamp() <= seen) return;               // already shown for this exit
+        prefs.edit().putLong("updateNoticeTs", last.getTimestamp()).apply();
+        Term.notice(this, "archbox update",
+                "Archbox was updated to " + BuildConfig.VERSION_NAME
+                        + " while a container was running, so that session was stopped.\n\nPress Enter to start the container again.",
+                null);
     }
 
     static final String VERSION = BuildConfig.GIT_SHA + " sdk" + BuildConfig.TARGET_SDK;
 
     private File tierFile() { return new File(getFilesDir(), "archbox-tier"); }
 
+    /** Menu text for a backend value. The stored value stays lowercase; only the display changes. */
+    private static String backendLabel(String tier) {
+        if (tier == null) return "auto";
+        if (tier.equals("shim")) return "Archbox Shim";
+        return tier;
+    }
+
+    /** Extended debug: loader trace, syscall probe and process dumps. Off by default. */
+    private File debugFile() { return new File(getFilesDir(), "archbox-debug"); }
+    private boolean extendedDebug() { return debugFile().exists(); }
+
     /** Manual backend override written by the menu: unshare | proot | fakechroot (absent = automatic). */
     private String tierOverride() {
         try {
             String t = new String(java.nio.file.Files.readAllBytes(tierFile().toPath()), StandardCharsets.UTF_8).trim();
-            return (t.equals("unshare") || t.equals("proot") || t.equals("fakechroot")) ? t : null;
+            return (t.equals("unshare") || t.equals("proot") || t.equals("fakechroot") || t.equals("shim")) ? t : null;
         } catch (Exception e) { return null; }
     }
 
@@ -100,6 +132,7 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
             "ARCHBOX_TMP=" + new File(getFilesDir(), "proot-tmp").getPath()));
         String tier = tierOverride();
         if (tier != null) e.add("ARCHBOX_TIER=" + tier);
+        if (extendedDebug()) e.add("ARCHBOX_DEBUG=1");
         return e.toArray(new String[0]);
     }
 
@@ -149,8 +182,10 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
     // ---- menu ----------------------------------------------------------------------------
 
     private void showMenu() {
-        String[] items = {"Restart session", "Backend: " + (tierOverride() == null ? "auto" : tierOverride()) + "...",
-                "Text larger", "Text smaller", "Reinstall rootfs...", "Send Ctrl+C", "Key debug: " + (keyDebug ? "on" : "off"), "Diagnostics (processes)", "Recovery shell (no login scripts)"};
+        String[] items = {"Restart session", "Backend: " + backendLabel(tierOverride()) + "...",
+                "Text larger", "Text smaller", "Reinstall rootfs...", "Send Ctrl+C", "Key debug: " + (keyDebug ? "on" : "off"), "Diagnostics (processes)", "Recovery shell (no login scripts)",
+                "Extended debug: " + (extendedDebug() ? "on" : "off"),
+                "Crash test: null dereference (needs Extended debug)"};
         new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
                 .setTitle("Archbox " + VERSION)
                 .setItems(items, (d, which) -> {
@@ -164,6 +199,17 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
                         case 7: showDiagnostics(); break;
                         case 8: recoveryShell(); break;
                         case 6: keyDebug = !keyDebug; debug("key debug " + (keyDebug ? "on: type something" : "off")); break;
+                        case 9:
+                            if (extendedDebug()) debugFile().delete();
+                            else try { debugFile().createNewFile(); } catch (Exception ignored) { }
+                            restartContainer();
+                            break;
+                        case 10:
+                            if (!extendedDebug()) { debug("turn on Extended debug first"); break; }
+                            /* Deliberate: dereference null so the app's crash path (crash.txt, then the crash screen) runs. */
+                            String nothing = null;
+                            debug("crashing on purpose: " + nothing.length());
+                            break;
                     }
                 }).show();
     }
@@ -238,9 +284,9 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
     }
 
     private void chooseBackend() {
-        final String[] values = {null, "unshare", "proot", "fakechroot"};
+        final String[] values = {null, "unshare", "proot", "fakechroot", "shim"};
         String[] labels = {"Automatic (unshare, then proot, then fakechroot)", "unshare (namespaces)",
-                "proot", "fakechroot"};
+                "proot", "fakechroot", "Archbox Shim (experimental)"};
         new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
                 .setTitle("Container backend")
                 .setItems(labels, (d, which) -> {

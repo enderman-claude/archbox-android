@@ -1,4 +1,4 @@
-package dev.archbox;
+package com.archbox.container;
 
 import android.app.Activity;
 import android.content.Intent;
@@ -35,21 +35,20 @@ public class MainActivity extends Activity {
 
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
-        col.setBackgroundColor(Color.BLACK);
+        col.setBackgroundColor(Term.BG);
         col.setPadding(24, 48, 24, 24);
 
-        TextView tv = new TextView(this);
-        tv.setText("Archbox crashed last time:\n\n" + text);
-        tv.setTextColor(Color.WHITE);
-        tv.setTextSize(11);
-        tv.setTypeface(Typeface.MONOSPACE);
+        TextView head = Term.line(this, "This is probably fine, but could be the cause of a deeper issue", 14, Term.AMBER);
+        head.setPadding(0, 0, 0, 24);
+        col.addView(head);
+
+        TextView tv = Term.line(this, text, 11, Term.FG);
         tv.setTextIsSelectable(true);
         ScrollView sv = new ScrollView(this);
         sv.addView(tv);
         col.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1f));
 
-        Button retry = new Button(this);
-        retry.setText("Clear and retry");
+        Button retry = Term.button(this, "clear and retry");
         retry.setOnClickListener(v -> { crash.delete(); Crumbs.ack(this); go(); });
         col.addView(retry);
         setContentView(col);
