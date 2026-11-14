@@ -15,9 +15,11 @@ import android.widget.TextView;
 /** Terminal look for every Archbox screen: black background, monospace text, one accent per meaning. */
 final class Term {
     static final int BG = 0xFF0A0C0A;
-    static final int FG = 0xFFC8D3C8;
-    static final int DIM = 0xFF6B7A6B;
-    static final int GREEN = 0xFF7CFC9A;   /* prompt, success, the action you take */
+    static final int WHITE = 0xFFFFFFFF;   /* default text and dev output: not notable */
+    static final int FG = WHITE;
+    static final int DIM = WHITE;          /* secondary text is still not notable */
+    static final int BLUE = 0xFF5CA8FF;    /* notable info: what changed, what to do next */
+    static final int GREEN = 0xFF7CFC9A;   /* prompt and actions */
     static final int AMBER = 0xFFFFC857;   /* warnings and "probably fine" lines */
     static final int RED = 0xFFFF6B6B;     /* real failures */
 
@@ -55,8 +57,8 @@ final class Term {
         col.setBackgroundColor(BG);
         col.setPadding(48, 48, 48, 32);
 
-        col.addView(line(c, "$ " + header, 14, GREEN));
-        TextView body1 = line(c, body, 14, FG);
+        col.addView(line(c, "$ " + header, 14, BLUE));
+        TextView body1 = line(c, body, 14, BLUE);
         body1.setPadding(0, 32, 0, 32);
         col.addView(body1);
 

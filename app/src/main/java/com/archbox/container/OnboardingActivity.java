@@ -28,7 +28,7 @@ import java.io.File;
  */
 public class OnboardingActivity extends Activity implements InstallService.Watcher {
     private static final int RC_PICK = 1, RC_EXPORT = 2, RC_NOTIF = 3;
-    private static final int FG = Term.FG, DIM = Term.DIM, ACCENT = Term.GREEN, ERR = Term.RED;
+    private static final int FG = Term.FG, DIM = Term.DIM, ACCENT = Term.BLUE, ERR = Term.RED;
 
     private Bootstrap bootstrap;
     private Uri picked, export;
