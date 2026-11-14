@@ -690,6 +690,7 @@ static int run_shim(const char *root, char **cmd, const char *tty) {
     if (access(ld, X_OK) < 0) die(ld);
     snprintf(libpath, sizeof libpath, "%s:%s", dir, rootlib);
     fprintf(stderr, "archbox debug [shim] preloading %s\n", cred);
+    scan_syscalls();   /* same blocked-call table as the fakechroot tier, to compare */
 
     const char *term = getenv("TERM");
     char termbuf[64];
