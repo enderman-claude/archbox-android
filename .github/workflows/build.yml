@@ -64,6 +64,19 @@ jobs:
           sudo apt-get install -y -qq gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu autoconf automake libtool make zstd xz-utils patch file
           bash tools/fetch_fakechroot.sh app/src/main/jniLibs/arm64-v8a
 
+      # Credential shim from archbox-rootenv, at a pinned commit. The launcher does not load it yet;
+      # this step only makes sure it builds and ships in the APK. A failure here fails the build.
+      - name: Build credential shim (archbox-rootenv)
+        run: |
+          set -e
+          ROOTENV_COMMIT=9d8a0dd4c52771064625418dedaae3bbd9c62fd4
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu
+          git clone -q https://github.com/enderman-claude/archbox-rootenv rootenv
+          git -C rootenv checkout -q "$ROOTENV_COMMIT"
+          (cd rootenv && scripts/build.sh aarch64)
+          cp rootenv/build/libfakeroot-credentials.so app/src/main/jniLibs/arm64-v8a/
+          file app/src/main/jniLibs/arm64-v8a/libfakeroot-credentials.so
+
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.7"
@@ -124,6 +137,19 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+      # Credential shim from archbox-rootenv, at a pinned commit. The launcher does not load it yet;
+      # this step only makes sure it builds and ships in the APK. A failure here fails the build.
+      - name: Build credential shim (archbox-rootenv)
+        run: |
+          set -e
+          ROOTENV_COMMIT=9d8a0dd4c52771064625418dedaae3bbd9c62fd4
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu
+          git clone -q https://github.com/enderman-claude/archbox-rootenv rootenv
+          git -C rootenv checkout -q "$ROOTENV_COMMIT"
+          (cd rootenv && scripts/build.sh aarch64)
+          cp rootenv/build/libfakeroot-credentials.so app/src/main/jniLibs/arm64-v8a/
+          file app/src/main/jniLibs/arm64-v8a/libfakeroot-credentials.so
+
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.7"
