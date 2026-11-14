@@ -498,6 +498,63 @@ static int start_faked(const char *dir, const char *root, const char *ld, const 
     return 0;
 }
 
+/* Debug: which syscalls does Android's filter block for this app? Each candidate runs in its own
+   forked child with arguments chosen to fail harmlessly (NULL pointers, invalid flags, -1 fds), so
+   nothing takes effect if the filter lets the call through. A child that dies of SIGSYS means the
+   filter blocked it. Printed to the terminal, so no adb is needed. */
+#include <sys/syscall.h>
+struct sc_probe { const char *name; long nr; long a, b, c, d; };
+#define SCP(name, a1, a2, a3, a4) { #name, SYS_##name, (long)(a1), (long)(a2), (long)(a3), (long)(a4) }
+static void scan_syscalls(void) {
+    struct sc_probe list[] = {
+        SCP(openat, -100, 0, 0, 0),          /* AT_FDCWD, NULL path: EFAULT */
+        SCP(clone3, 0, 0, 0, 0),             /* NULL args: EFAULT */
+        SCP(faccessat2, -100, 0, 0, 0),
+        SCP(socket, 9999, 0, 0, 0),          /* bogus domain: EAFNOSUPPORT */
+        SCP(bind, -1, 0, 0, 0),              /* bad fd: EBADF */
+        SCP(connect, -1, 0, 0, 0),
+        SCP(personality, 0xffffffffL, 0, 0, 0), /* query only */
+        SCP(prctl, -1, 0, 0, 0),             /* bad option: EINVAL */
+        SCP(ptrace, -1, 0, 0, 0),            /* bad request: EIO */
+        SCP(bpf, -1, 0, 0, 0),               /* bad cmd: EINVAL */
+        SCP(mount, 0, 0, 0, 0),              /* NULL: EFAULT */
+        SCP(unshare, 0, 0, 0, 0),            /* no flags: no-op */
+        SCP(setresuid, -1, -1, -1, 0),       /* -1 = leave unchanged */
+        SCP(setresgid, -1, -1, -1, 0),
+        SCP(setgroups, -1, 0, 0, 0),         /* bad count: EINVAL */
+        SCP(chroot, 0, 0, 0, 0),             /* NULL: EFAULT */
+        SCP(pivot_root, 0, 0, 0, 0),         /* NULL: EFAULT */
+        SCP(mknodat, -100, 0, 0, 0),         /* NULL: EFAULT */
+        SCP(fchownat, -1, 0, -1, -1),        /* bad fd, NULL path */
+        SCP(rseq, 0, 0, 0, 0),               /* NULL: EFAULT */
+        SCP(membarrier, -1, 0, 0, 0),        /* bad cmd: EINVAL */
+        SCP(userfaultfd, -1, 0, 0, 0),       /* bad flags: EINVAL */
+        SCP(sched_setattr, -1, 0, 0, 0),     /* bad pid: EINVAL */
+        SCP(kcmp, -1, -1, -1, 0),            /* bad pids: ESRCH */
+        SCP(process_vm_readv, -1, 0, 0, 0),  /* bad pid: ESRCH */
+    };
+    int n = (int)(sizeof list / sizeof list[0]);
+    int blocked = 0;
+    fprintf(stderr, "archbox debug [syscall probe] testing %d calls\n", n);
+    for (int i = 0; i < n; i++) {
+        pid_t p = fork();
+        if (p == 0) {
+            syscall(list[i].nr, list[i].a, list[i].b, list[i].c, list[i].d);
+            _exit(0);
+        }
+        int st = 0;
+        while (waitpid(p, &st, 0) < 0 && errno == EINTR) {}
+        if (WIFSIGNALED(st) && WTERMSIG(st) == SIGSYS) {
+            fprintf(stderr, "archbox debug [syscall probe] BLOCKED %s (%ld)\n", list[i].name, list[i].nr);
+            blocked++;
+        } else if (WIFSIGNALED(st)) {
+            fprintf(stderr, "archbox debug [syscall probe] %s (%ld) killed by signal %d\n",
+                    list[i].name, list[i].nr, WTERMSIG(st));
+        }
+    }
+    fprintf(stderr, "archbox debug [syscall probe] %d of %d blocked\n", blocked, n);
+}
+
 /* Debug: which seccomp mode this process runs under (0 none, 1 strict, 2 filter). */
 static void dump_seccomp(const char *who) {
     FILE *f = fopen("/proc/self/status", "r");
@@ -533,6 +590,7 @@ static int run_fakechroot(const char *root, char **cmd, const char *tty) {
     snprintf(excl, sizeof excl, "/dev:/proc:/sys:%s:%s", dir, tmp);
 
     dump_seccomp("before fakechroot");
+    scan_syscalls();
     char key[32] = "";
     int have_faked = start_faked(dir, root, ld, libpath, key, sizeof key) == 0;
     if (!have_faked)
