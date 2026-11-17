@@ -67,8 +67,8 @@ final class Crumbs {
                 if (r == ApplicationExitInfo.REASON_CRASH_NATIVE) {
                     try (InputStream in = i.getTraceInputStream()) {
                         if (in != null) {
-                            byte[] buf = new byte[262144]; int n = 0, r;
-                            while (n < buf.length && (r = in.read(buf, n, buf.length - n)) > 0) n += r;
+                            byte[] buf = new byte[262144]; int n = 0, got;
+                            while (n < buf.length && (got = in.read(buf, n, buf.length - n)) > 0) n += got;
                             StringBuilder run = new StringBuilder(); int shown = 0;
                             for (int k = 0; k < n && shown < 3000; k++) {
                                 char ch = (char) (buf[k] & 0xff);
