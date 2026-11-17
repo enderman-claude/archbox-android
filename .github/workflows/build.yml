@@ -2,12 +2,31 @@ name: build-apk
 on:
   push:
   workflow_dispatch:
+  release:
+    types: [published]
 
 jobs:
   apk:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+
+      # Beta = the release/tag name ends in -beta.N (e.g. v0.1.0-beta.12). Releases are not flagged
+      # as prerelease, so the tag is the only signal. Branch pushes and manual runs are never beta.
+      - name: Decide beta channel from the tag
+        env:
+          EVENT: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$EVENT" = "release" ]; then TAG="$RELEASE_TAG"
+          elif [ "$REF_TYPE" = "tag" ]; then TAG="$REF_NAME"
+          else TAG=""; fi
+          BETA=false
+          if echo "$TAG" | grep -Eq -- '-beta\.[0-9]+$'; then BETA=true; fi
+          echo "BETA=$BETA" >> "$GITHUB_ENV"
+          echo "::notice title=channel::tag '${TAG:-none}' -> betaFeatures=$BETA"
 
       - uses: actions/setup-java@v4
         with:
@@ -72,8 +91,8 @@ jobs:
           mkdir -p out
           pip install --quiet pillow
           ICON=app/src/main/res/drawable-nodpi/ic_launcher.png
-          { python3 tools/gen_icon.py "$GITHUB_SHA" 28 $ICON && gradle --no-daemon assembleDebug -Ptsdk=28 -Pgitsha=$GITHUB_SHA && cp app/build/outputs/apk/debug/app-debug.apk out/archbox-target28.apk \
-            && python3 tools/gen_icon.py "$GITHUB_SHA" 34 $ICON && gradle --no-daemon assembleDebug -Ptsdk=34 -Pgitsha=$GITHUB_SHA && cp app/build/outputs/apk/debug/app-debug.apk out/archbox-target34.apk; } 2>&1 | tee gradle.log
+          { python3 tools/gen_icon.py "$GITHUB_SHA" 28 $ICON && gradle --no-daemon assembleDebug -Ptsdk=28 -Pgitsha=$GITHUB_SHA -PbetaFeatures=$BETA && cp app/build/outputs/apk/debug/app-debug.apk out/archbox-target28.apk \
+            && python3 tools/gen_icon.py "$GITHUB_SHA" 34 $ICON && gradle --no-daemon assembleDebug -Ptsdk=34 -Pgitsha=$GITHUB_SHA -PbetaFeatures=$BETA && cp app/build/outputs/apk/debug/app-debug.apk out/archbox-target34.apk; } 2>&1 | tee gradle.log
 
       # (surface the error as an annotation so it is readable through the API too)
       - name: Report build errors
