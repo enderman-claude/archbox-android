@@ -15,6 +15,9 @@ android {
         val sha = (findProperty("gitsha") as String?) ?: "dev"
         buildConfigField("String", "GIT_SHA", "\"${sha.take(7)}\"")
         buildConfigField("int", "TARGET_SDK", "$tsdk")
+        // beta-only features (e.g. the debug crash menu item): off unless built with -PbetaFeatures=true
+        val beta = (findProperty("betaFeatures") as String?)?.toBoolean() ?: false
+        buildConfigField("boolean", "BETA_FEATURES", "$beta")
         if (tsdk != 28) applicationIdSuffix = ".t$tsdk"
         versionCode = 1
         versionName = "0.1"

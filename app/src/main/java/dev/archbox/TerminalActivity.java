@@ -149,8 +149,11 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
     // ---- menu ----------------------------------------------------------------------------
 
     private void showMenu() {
-        String[] items = {"Restart session", "Backend: " + (tierOverride() == null ? "auto" : tierOverride()) + "...",
-                "Text larger", "Text smaller", "Reinstall rootfs...", "Send Ctrl+C", "Key debug: " + (keyDebug ? "on" : "off"), "Diagnostics (processes)", "Recovery shell (no login scripts)"};
+        java.util.List<String> list = new java.util.ArrayList<>(java.util.Arrays.asList(
+                "Restart session", "Backend: " + (tierOverride() == null ? "auto" : tierOverride()) + "...",
+                "Text larger", "Text smaller", "Reinstall rootfs...", "Send Ctrl+C", "Key debug: " + (keyDebug ? "on" : "off"), "Diagnostics (processes)", "Recovery shell (no login scripts)"));
+        if (BuildConfig.BETA_FEATURES) list.add("Debug: crash (null dereference)");   // beta only; appended so other indices stay put
+        String[] items = list.toArray(new String[0]);
         new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
                 .setTitle("Archbox " + VERSION)
                 .setItems(items, (d, which) -> {
@@ -164,8 +167,15 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
                         case 7: showDiagnostics(); break;
                         case 8: recoveryShell(); break;
                         case 6: keyDebug = !keyDebug; debug("key debug " + (keyDebug ? "on: type something" : "off")); break;
+                        case 9: if (BuildConfig.BETA_FEATURES) crashForDebug(); break;
                     }
                 }).show();
+    }
+
+    /** Beta debug aid: throws a NullPointerException on purpose, to exercise the crash.txt path. */
+    private void crashForDebug() {
+        String s = null;
+        if (System.nanoTime() != 0) s.length();      // never 0 in practice; keeps javac from folding it away
     }
 
     /** Lists this app's processes (the container shows up here too) with state and terminal process groups:
