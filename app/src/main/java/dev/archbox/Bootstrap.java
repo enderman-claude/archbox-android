@@ -400,6 +400,11 @@ final class Bootstrap {
                     } else if (e.isLink()) {
                         deleteRecursive(f);
                         File target = new File(root, clean(e.getLinkName()));
+                        // A hard link to a path outside the rootfs (../../...) would expose host files.
+                        if (escapesRoot(target) || !target.getCanonicalPath().startsWith(root.getCanonicalPath() + "/")) {
+                            out.log("skipping (link target escapes rootfs): " + name + "\n");
+                            continue;
+                        }
                         try {
                             Os.link(target.getPath(), path);
                         } catch (Exception linkFail) {
