@@ -399,7 +399,7 @@ public class TerminalActivity extends Activity implements TerminalSessionClient,
     }
     @Override public void onPasteTextFromClipboard(@Nullable TerminalSession s) {
         android.content.ClipboardManager cm = (android.content.ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-        if (s != null && cm.hasPrimaryClip() && cm.getPrimaryClip().getItemCount() > 0) {
+        if (s != null && s.getEmulator() != null && cm.hasPrimaryClip() && cm.getPrimaryClip().getItemCount() > 0) {
             CharSequence t = cm.getPrimaryClip().getItemAt(0).coerceToText(this);
             if (t != null) s.getEmulator().paste(t.toString());
         }

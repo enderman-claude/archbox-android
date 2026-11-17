@@ -99,8 +99,10 @@ public class InstallService extends Service {
         if (in == null || !ACTION_START.equals(in.getAction())) { stopSelf(); return START_NOT_STICKY; }
         if (worker != null && worker.isAlive()) return START_NOT_STICKY;   // already installing
 
+        final String kindName = in.getStringExtra("kind");
+        if (kindName == null) { stopSelf(); return START_NOT_STICKY; }
         final Bootstrap.Request req = new Bootstrap.Request(
-                Bootstrap.Request.Kind.valueOf(in.getStringExtra("kind")),
+                Bootstrap.Request.Kind.valueOf(kindName),
                 in.hasExtra("file") ? Uri.parse(in.getStringExtra("file")) : null,
                 in.hasExtra("export") ? Uri.parse(in.getStringExtra("export")) : null,
                 in.getBooleanExtra("keep", true));

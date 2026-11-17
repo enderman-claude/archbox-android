@@ -130,6 +130,7 @@ static int run_init(const char *root, char **cmd, const char *tty) {
         if (cmd[0]) {
             int n = 0; while (cmd[n]) n++;
             char **argv = calloc(n + 4, sizeof(char *));
+            if (!argv) die("calloc");
             argv[0] = "ld-linux-aarch64.so.1";
             argv[1] = "--library-path";
             argv[2] = "/usr/lib";
