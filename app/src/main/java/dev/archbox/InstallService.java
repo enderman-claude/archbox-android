@@ -70,7 +70,14 @@ public class InstallService extends Service {
                 .putExtra("kind", r.kind.name()).putExtra("keep", r.keep);
         if (r.file != null) i.putExtra("file", r.file.toString());
         if (r.export != null) i.putExtra("export", r.export.toString());
-        c.startForegroundService(i);
+        try {
+            c.startForegroundService(i);
+        } catch (RuntimeException e) {
+            // Android 12+ refuses foreground starts from the background. Without this the UI would
+            // keep showing "running" for an install that never started.
+            S.reset();
+            S.error = "Could not start the install service: " + e;
+        }
     }
 
     static void cancel(Context c) {
