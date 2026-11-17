@@ -100,7 +100,7 @@ public class InstallService extends Service {
         if (worker != null && worker.isAlive()) return START_NOT_STICKY;   // already installing
 
         final String kindName = in.getStringExtra("kind");
-        if (kindName == null) { stopSelf(); return START_NOT_STICKY; }
+        if (kindName == null) { S.reset(); stopSelf(); return START_NOT_STICKY; }
         final Bootstrap.Request req = new Bootstrap.Request(
                 Bootstrap.Request.Kind.valueOf(kindName),
                 in.hasExtra("file") ? Uri.parse(in.getStringExtra("file")) : null,
