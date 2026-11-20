@@ -23,6 +23,26 @@ android {
         versionName = "0.1"
         ndk { abiFilters += "arm64-v8a" }
     }
+    // Same signing identity as enderman-claude/camera-app, so Android sees one developer.
+    // CI sets CAMERA_KEYSTORE_PATH; without it, builds keep the default debug key.
+    signingConfigs {
+        create("release") {
+            val ks = System.getenv("CAMERA_KEYSTORE_PATH")
+            if (ks != null) {
+                storeFile = file(ks)
+                storePassword = System.getenv("CAMERA_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("CAMERA_KEY_ALIAS")
+                keyPassword = System.getenv("CAMERA_KEY_PASSWORD")
+            }
+        }
+    }
+    buildTypes {
+        getByName("debug") {
+            if (System.getenv("CAMERA_KEYSTORE_PATH") != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

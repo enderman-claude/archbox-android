@@ -85,8 +85,22 @@ jobs:
         with:
           gradle-version: "8.7"
 
+      - name: Decode release keystore (if the CAMERA_ secrets are set)
+        shell: bash
+        env:
+          CAMERA_KEYSTORE_B64: ${{ secrets.CAMERA_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$CAMERA_KEYSTORE_B64" ]; then
+            echo "$CAMERA_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/camera-release.jks"
+            echo "CAMERA_KEYSTORE_PATH=$RUNNER_TEMP/camera-release.jks" >> "$GITHUB_ENV"
+          fi
+
       - name: Assemble APK
         shell: bash
+        env:
+          CAMERA_KEYSTORE_PASSWORD: ${{ secrets.CAMERA_KEYSTORE_PASSWORD }}
+          CAMERA_KEY_ALIAS: ${{ secrets.CAMERA_KEY_ALIAS }}
+          CAMERA_KEY_PASSWORD: ${{ secrets.CAMERA_KEY_PASSWORD }}
         run: |
           mkdir -p out
           pip install --quiet pillow
